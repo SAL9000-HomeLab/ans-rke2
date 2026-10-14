@@ -1,0 +1,53 @@
+---
+# roles/rke2_cluster/defaults/main.yml
+
+# Inventory groups. A host is a server (etcd + control plane) or an agent (workloads only).
+rke2_cluster_server_group: rke2_servers
+rke2_cluster_agent_group: rke2_agents
+
+# The cluster's fixed API address: kube-vip holds it on one of the servers (see the kube_vip role). Nodes join
+# through it (https://<address>:9345) and clients reach the API on it (6443). Required.
+rke2_cluster_api_address: ""
+
+# DNS name for rke2_cluster_api_address, e.g. rke2-api.lab.example.com. Added to the API certificate.
+rke2_cluster_api_hostname: ""
+
+# Extra names and addresses for the API certificate. The API address and hostname are always included.
+rke2_cluster_tls_san: []
+
+# Join token. Empty: the first server generates one and the play reads it from a running server, so it never has to
+# be stored. Set it (from an AWX credential) to choose it yourself; it must not change once the cluster exists.
+rke2_cluster_token: ""
+
+# Network plugin. Can't be changed once the cluster exists.
+rke2_cluster_cni: canal
+
+# Per host: the node's address on the cluster network. Defaults to the address on the interface with the default
+# route; nodes with storage interfaces would otherwise risk RKE2 picking one of those.
+rke2_cluster_node_ip: "{{ ansible_facts.default_ipv4.address | default('') }}"
+
+# Per host: the node's Kubernetes name. Defaults to the host's short name (as set by cloud-init).
+rke2_cluster_node_name: "{{ ansible_facts.hostname | default(inventory_hostname_short) }}"
+
+# Per host: the physical host the node runs on, e.g. its Proxmox node. Set as the node's topology.kubernetes.io/zone
+# label so replicas can be spread across hosts. Empty leaves the label alone.
+rke2_cluster_node_zone: ""
+
+# Per host: extra node labels, kept up to date on every run (labels set by others are left alone).
+rke2_cluster_node_labels: {}
+
+# Per host: node taints, e.g. ["dedicated=storage:NoSchedule"]. Only applied when the node first registers.
+rke2_cluster_node_taints: []
+
+# true taints the servers CriticalAddonsOnly=true:NoExecute when they register, keeping workloads on the agents.
+rke2_cluster_server_taint: false
+
+# Extra RKE2 settings merged into config.yaml (https://docs.rke2.io/reference/server_config and agent_config):
+# rke2_cluster_server_config on every server (cluster-wide settings such as cluster-cidr must be the same on all of
+# them), rke2_cluster_agent_config on every agent, and rke2_cluster_node_config per host on top.
+rke2_cluster_server_config: {}
+rke2_cluster_agent_config: {}
+rke2_cluster_node_config: {}
+
+# How long to wait for a node to become Ready after starting RKE2 (retries x 10 seconds).
+rke2_cluster_ready_retries: 60

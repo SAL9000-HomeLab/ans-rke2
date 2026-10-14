@@ -1,0 +1,8 @@
+---
+# roles/rke2_cluster/vars/main.yml
+# Where RKE2 keeps things (fixed by the RKE2 packages).
+rke2_cluster_config_file: /etc/rancher/rke2/config.yaml
+rke2_cluster_kubeconfig: /etc/rancher/rke2/rke2.yaml
+rke2_cluster_kubectl: /var/lib/rancher/rke2/bin/kubectl
+rke2_cluster_token_file: /var/lib/rancher/rke2/server/node-token
+rke2_cluster_etcd_dir: /var/lib/rancher/rke2/server/db/etcd

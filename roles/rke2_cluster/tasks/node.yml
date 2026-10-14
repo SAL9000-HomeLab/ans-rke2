@@ -1,0 +1,136 @@
+---
+# roles/rke2_cluster/tasks/node.yml
+# Write this node's /etc/rancher/rke2/config.yaml, start RKE2 (rke2-server or rke2-agent), restart it when the
+# config changed, and wait until the node is Ready. Needs the facts discover.yml (and, when the cluster is new,
+# token.yml) left on localhost. site.yml runs it one node at a time.
+
+- name: Work out the node's role
+  ansible.builtin.set_fact:
+    rke2_cluster_node_type: "{{ 'server' if inventory_hostname in groups[rke2_cluster_server_group] else 'agent' }}"
+    # Only the server that starts the cluster, and later the one it started on, run without a server: line;
+    # every other node joins through the API address. This doesn't depend on which servers are reachable.
+    rke2_cluster_is_init: >-
+      {{ (hostvars['localhost'].rke2_cluster_bootstrap | bool
+          and inventory_hostname == hostvars['localhost'].rke2_cluster_init_server)
+         or inventory_hostname in hostvars['localhost'].rke2_cluster_origin_servers }}
+
+- name: Check RKE2 is installed
+  ansible.builtin.stat:
+    path: /usr/bin/rke2
+  register: rke2_cluster_binary
+
+- name: Check the node can join
+  ansible.builtin.assert:
+    that:
+      - rke2_cluster_binary.stat.exists
+      - rke2_cluster_node_ip | length > 0
+      - rke2_cluster_is_init or (hostvars['localhost'].rke2_cluster_token_resolved | default('') | length > 0)
+    fail_msg: >-
+      {{ inventory_hostname }}: RKE2 must be installed (vm-templates' tpl-rocky-10-rke2 template has it), the node
+      needs an address (rke2_cluster_node_ip), and joining needs the join token from the cluster.
+    quiet: true
+
+# The server the cluster starts on has no server: line; everyone else joins through the API address. A token goes
+# on the init server only when it is chosen (rke2_cluster_token); otherwise RKE2 generates it there.
+- name: Build the node's RKE2 configuration
+  ansible.builtin.set_fact:
+    rke2_cluster_node_settings: >-
+      {{
+        {'node-name': rke2_cluster_node_name, 'node-ip': rke2_cluster_node_ip}
+        | combine({'server': 'https://' ~ rke2_cluster_api_address ~ ':9345'} if not rke2_cluster_is_init else {})
+        | combine({'token': hostvars['localhost'].rke2_cluster_token_resolved}
+                  if not rke2_cluster_is_init or rke2_cluster_token | length > 0 else {})
+        | combine({
+            'cni': rke2_cluster_cni,
+            'tls-san': ([rke2_cluster_api_address, rke2_cluster_api_hostname] + rke2_cluster_tls_san)
+                       | select | unique | list,
+            'write-kubeconfig-mode': '0600'
+          } if rke2_cluster_node_type == 'server' else {})
+        | combine({'node-taint': rke2_cluster_node_taints
+                   + (['CriticalAddonsOnly=true:NoExecute']
+                      if rke2_cluster_node_type == 'server' and rke2_cluster_server_taint | bool else [])}
+                  if rke2_cluster_node_taints | length > 0
+                     or (rke2_cluster_node_type == 'server' and rke2_cluster_server_taint | bool) else {})
+        | combine(rke2_cluster_server_config if rke2_cluster_node_type == 'server' else rke2_cluster_agent_config)
+        | combine(rke2_cluster_node_config)
+      }}
+  no_log: true
+
+- name: Create the RKE2 configuration directory
+  ansible.builtin.file:
+    path: "{{ rke2_cluster_config_file | dirname }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Write the RKE2 configuration
+  ansible.builtin.copy:
+    dest: "{{ rke2_cluster_config_file }}"
+    content: |
+      # Managed by ans-rke2 (rke2_cluster). A change restarts RKE2 on this node.
+      {{ rke2_cluster_node_settings | to_nice_yaml(indent=2, sort_keys=true) }}
+    owner: root
+    group: root
+    mode: "0600"
+  register: rke2_cluster_config_written
+  no_log: true
+
+# rke2-server/agent don't time out while they can't reach the server, so a missing VIP would hang the job.
+- name: Wait for the cluster's join address
+  ansible.builtin.wait_for:
+    host: "{{ rke2_cluster_api_address }}"
+    port: 9345
+    timeout: "{{ rke2_cluster_ready_retries * 10 }}"
+  when: not rke2_cluster_is_init
+
+- name: Start RKE2 ({{ rke2_cluster_node_type }})
+  ansible.builtin.systemd:
+    name: rke2-{{ rke2_cluster_node_type }}
+    enabled: true
+    state: started
+  register: rke2_cluster_started
+
+- name: Restart RKE2 to apply the changed configuration
+  ansible.builtin.systemd:
+    name: rke2-{{ rke2_cluster_node_type }}
+    state: restarted
+  when:
+    - rke2_cluster_config_written is changed
+    - rke2_cluster_started is not changed
+
+- name: Wait for the node to be Ready
+  ansible.builtin.command:
+    argv:
+      - "{{ rke2_cluster_kubectl }}"
+      - --kubeconfig
+      - "{{ rke2_cluster_kubeconfig }}"
+      - get
+      - node
+      - "{{ rke2_cluster_node_name }}"
+      - -o
+      - jsonpath={.status.conditions[?(@.type=="Ready")].status}
+  delegate_to: "{{ hostvars['localhost'].rke2_cluster_init_server }}"
+  become: true
+  register: rke2_cluster_ready
+  until: rke2_cluster_ready.stdout == 'True'
+  retries: "{{ rke2_cluster_ready_retries }}"
+  delay: 10
+  changed_when: false
+  failed_when: false
+
+- name: Report a node that didn't become Ready
+  ansible.builtin.fail:
+    msg: >-
+      {{ rke2_cluster_node_name }} isn't Ready after {{ rke2_cluster_ready_retries * 10 }} seconds
+      ({{ rke2_cluster_ready.stdout | default('') }}{{ rke2_cluster_ready.stderr | default('') }}). On the node:
+      journalctl -u rke2-{{ rke2_cluster_node_type }} -n 100; on a server: kubectl describe node
+      {{ rke2_cluster_node_name }}.
+  when: rke2_cluster_ready.stdout | default('') != 'True'
+
+# The first server generated the token when it started.
+- name: Read the join token from the new cluster
+  ansible.builtin.include_tasks: token.yml
+  when:
+    - rke2_cluster_is_init
+    - hostvars['localhost'].rke2_cluster_token_resolved | default('') | length == 0

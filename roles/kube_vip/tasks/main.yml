@@ -1,0 +1,41 @@
+---
+# roles/kube_vip/tasks/main.yml
+# Runs kube-vip as a static pod on each RKE2 server: the servers elect a leader through the Kubernetes API, and the
+# leader answers ARP for kube_vip_address. The manifest goes in place before RKE2 starts, so the address comes up
+# as soon as the first server's API does.
+
+- name: Check the kube-vip settings
+  ansible.builtin.assert:
+    that:
+      - kube_vip_address is match('^([0-9]{1,3}[.]){3}[0-9]{1,3}$')
+      - kube_vip_interface | length > 0
+    fail_msg: >-
+      kube-vip needs kube_vip_address (an IPv4 address, by default rke2_cluster_api_address) and an interface
+      (kube_vip_interface, by default the one with the default route); got '{{ kube_vip_address }}' on
+      '{{ kube_vip_interface }}'.
+    quiet: true
+  when: kube_vip_address | length > 0
+
+- name: Create the static pod directory
+  ansible.builtin.file:
+    path: "{{ kube_vip_manifest_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  when: kube_vip_address | length > 0
+
+- name: Write the kube-vip static pod manifest
+  ansible.builtin.template:
+    src: kube-vip.yaml.j2
+    dest: "{{ kube_vip_manifest_dir }}/kube-vip.yaml"
+    owner: root
+    group: root
+    mode: "0600"
+  when: kube_vip_address | length > 0
+
+- name: Remove kube-vip
+  ansible.builtin.file:
+    path: "{{ kube_vip_manifest_dir }}/kube-vip.yaml"
+    state: absent
+  when: kube_vip_address | length == 0

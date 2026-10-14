@@ -1,0 +1,17 @@
+---
+galaxy_info:
+  author: Roland Serman
+  description: Runs kube-vip as a static pod on RKE2 servers to hold a floating IP for the Kubernetes API
+  license: MIT
+  min_ansible_version: "2.16"
+  platforms:
+    - name: EL
+      versions:
+        - "9"
+        - "10"
+  galaxy_tags:
+    - kubernetes
+    - rke2
+    - kubevip
+
+dependencies: []

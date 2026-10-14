@@ -1,0 +1,24 @@
+---
+# roles/rke2_cluster/tasks/token.yml
+# Set hostvars['localhost'].rke2_cluster_token_resolved: rke2_cluster_token when set, otherwise the token the init
+# server generated. Run once per play.
+
+- name: Read the join token from the init server
+  ansible.builtin.slurp:
+    src: "{{ rke2_cluster_token_file }}"
+  delegate_to: "{{ hostvars['localhost'].rke2_cluster_init_server }}"
+  become: true
+  register: rke2_cluster_token_read
+  when: rke2_cluster_token | length == 0
+  run_once: true
+  no_log: true
+
+- name: Record the join token
+  ansible.builtin.set_fact:
+    rke2_cluster_token_resolved: >-
+      {{ rke2_cluster_token if rke2_cluster_token | length > 0
+         else (rke2_cluster_token_read.content | b64decode | trim) }}
+  delegate_to: localhost
+  delegate_facts: true
+  run_once: true
+  no_log: true
