@@ -5,6 +5,8 @@ pushing a `vX.Y.Z` tag; the release workflow publishes the matching section.
 
 ## [Unreleased]
 
+- Added: `fleet_bootstrap` role: points Rancher's Fleet at the platform GitOps repository (`fleet_bootstrap_repo`)
+  with a read-only GitHub token stored as the Secret `fleet-github`, and checks that Fleet cloned it.
 - Added: storage add-ons. `ceph_csi` installs ceph-csi 3.18 against an existing Ceph cluster: RBD (`ceph-rbd`, the
   default StorageClass) and CephFS (`ceph-cephfs`), each with its key in a Secret, through the userspace clients
   (`rbd-nbd`, `ceph-fuse`) because Ceph's aes256k keys need Linux 7.0 for the kernel clients. `nfs_csi` installs csi-driver-nfs

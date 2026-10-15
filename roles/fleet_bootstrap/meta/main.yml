@@ -1,0 +1,17 @@
+---
+galaxy_info:
+  author: Roland Serman
+  description: Points Rancher Fleet at a platform Git repository with a read-only GitHub credential
+  license: MIT
+  min_ansible_version: "2.16"
+  platforms:
+    - name: EL
+      versions:
+        - "9"
+        - "10"
+  galaxy_tags:
+    - kubernetes
+    - rke2
+    - fleet
+
+dependencies: []

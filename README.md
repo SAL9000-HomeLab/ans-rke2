@@ -17,6 +17,7 @@ changed settings are applied one node at a time.
 | [storage_check](roles/storage_check) | Helper the storage roles use: provisions a test volume and writes to it from a pod |
 | [cert_manager](roles/cert_manager) | Installs cert-manager and Let's Encrypt `ClusterIssuer`s that solve DNS-01 challenges through Cloudflare |
 | [rancher](roles/rancher) | Installs Rancher behind Traefik with a cert-manager certificate and an IP allowlist |
+| [fleet_bootstrap](roles/fleet_bootstrap) | Points Rancher's Fleet at the platform GitOps repository (k8s-platform) with a read-only GitHub token |
 | [kubectl_apply](roles/kubectl_apply) | Helper the others use to `kubectl apply` manifests on a server |
 
 The values committed in `inventory/` are placeholders (`example.com`, `192.0.2.0/24`). Put your real hosts in the
@@ -296,11 +297,15 @@ StorageClass (`kubectl delete storageclass nas-nfs`; existing volumes keep worki
 ## Add-ons
 
 The add-ons are installed after the nodes, on one server, each when its variables are set. Each one waits for the
-previous: cloud provider → Traefik's address → Ceph storage → NFS storage → cert-manager → Rancher. They're installed
+previous: cloud provider → Traefik's address → Ceph storage → NFS storage → cert-manager → Rancher → Fleet. They're
+installed
 through RKE2's Helm controller (`HelmChart` objects in `kube-system`), so the execution environment doesn't need `helm`
 or `kubectl`.
 
 Turning one off later doesn't uninstall it.
+
+`kubectl get cluster` on this cluster means Rancher's Cluster API type; CloudNativePG's is
+`clusters.postgresql.cnpg.io`.
 
 ### rke2_traefik
 
@@ -377,6 +382,50 @@ ends by printing how to read the first-login password:
 ```sh
 kubectl -n cattle-system get secret bootstrap-secret -o jsonpath={.data.bootstrapPassword} | base64 -d
 ```
+
+### fleet_bootstrap
+
+Rancher includes [Fleet](https://fleet.rancher.io), its GitOps engine. This role gives it one repository to deploy, the
+platform repository (k8s-platform), which in turn lists the app repositories. Everything after that is deployed from
+Git, not by this job.
+
+| Variable | Default | Notes |
+| --- | --- | --- |
+| `fleet_bootstrap_enabled` | `false` | Needs `rancher_enabled`. |
+| `fleet_bootstrap_repo` | **required** | HTTPS URL, e.g. `https://github.com/SAL9000-HomeLab/k8s-platform`. |
+| `fleet_bootstrap_branch` | `main` | |
+| `fleet_bootstrap_name` | `k8s-platform` | The GitRepo's name; bundle names start with it. |
+| `fleet_bootstrap_github_token` | `""` | Secret. A read-only GitHub token for private repositories; empty for a public one. |
+| `fleet_bootstrap_secret_name` | `fleet-github` | The Secret in `fleet-local` holding the token; the app GitRepos refer to it. |
+
+The job checks that Fleet cloned the repository and fails with Fleet's message if it didn't (a wrong token, or a
+repository the token can't read). The GitRepo scans each top-level directory with a `fleet.yaml` (`paths: ["*"]`):
+without that, Fleet also makes the repository's root a bundle, which takes in the subdirectories' files too.
+
+**The GitHub token:** a fine-grained personal access token (GitHub → **Settings → Developer settings → Personal access
+tokens → Fine-grained tokens**): resource owner `SAL9000-HomeLab`, **Only select repositories** (k8s-platform and the
+`k8s-*` app repositories), permission **Contents: Read-only**. Add new app repositories to it as they're created. Give
+it to the job through a credential type:
+
+```yaml
+# Input configuration
+fields:
+  - id: fleet_bootstrap_github_token
+    label: GitHub token (Fleet, read-only)
+    type: string
+    secret: true
+required:
+  - fleet_bootstrap_github_token
+```
+
+```yaml
+# Injector configuration
+extra_vars:
+  fleet_bootstrap_github_token: "{{ fleet_bootstrap_github_token }}"
+```
+
+When the token expires, Fleet stops picking up changes (what's deployed keeps running): put the new one in the
+credential and run the job.
 
 ## Using the cluster
 

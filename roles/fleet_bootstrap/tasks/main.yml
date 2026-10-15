@@ -1,0 +1,105 @@
+---
+# roles/fleet_bootstrap/tasks/main.yml
+# Create Fleet's Git credential and the platform GitRepo in fleet-local (the local cluster), then check that Fleet
+# cloned it. Runs on a server, after Rancher.
+
+- name: Check the Fleet settings
+  ansible.builtin.assert:
+    that:
+      - fleet_bootstrap_repo is match('^https://')
+      - fleet_bootstrap_name is match('^[a-z0-9]([a-z0-9-]*[a-z0-9])?$')
+    fail_msg: >-
+      Fleet needs fleet_bootstrap_repo (the platform repository's HTTPS URL); fleet_bootstrap_name is a lowercase
+      name (letters, digits, hyphens).
+    quiet: true
+
+# Rancher installs Fleet after it starts, so the GitRepo type can take a few minutes to appear.
+- name: Wait for Fleet
+  ansible.builtin.command:
+    argv: [/var/lib/rancher/rke2/bin/kubectl, --kubeconfig, /etc/rancher/rke2/rke2.yaml, get, crd,
+           gitrepos.fleet.cattle.io]
+  become: true
+  register: fleet_bootstrap_crd
+  until: fleet_bootstrap_crd.rc == 0
+  retries: "{{ fleet_bootstrap_wait_retries }}"
+  delay: 10
+  changed_when: false
+
+# Fleet sends the token as an HTTPS basic-auth password; GitHub ignores the user name.
+- name: Store Fleet's GitHub token
+  ansible.builtin.include_role:
+    name: kubectl_apply
+  vars:
+    kubectl_apply_name: Fleet's Git credential
+    kubectl_apply_no_log: true
+    kubectl_apply_manifest: |
+      apiVersion: v1
+      kind: Secret
+      metadata:
+        name: {{ fleet_bootstrap_secret_name }}
+        namespace: fleet-local
+      type: kubernetes.io/basic-auth
+      data:
+        username: {{ 'fleet' | b64encode }}
+        password: {{ fleet_bootstrap_github_token | b64encode }}
+  when: fleet_bootstrap_github_token | length > 0
+
+- name: Create the platform GitRepo
+  ansible.builtin.include_role:
+    name: kubectl_apply
+  vars:
+    kubectl_apply_name: the {{ fleet_bootstrap_name }} GitRepo
+    kubectl_apply_manifest: |
+      # Managed by ans-rke2 (fleet_bootstrap).
+      apiVersion: fleet.cattle.io/v1alpha1
+      kind: GitRepo
+      metadata:
+        name: {{ fleet_bootstrap_name }}
+        namespace: fleet-local
+      spec:
+        repo: {{ fleet_bootstrap_repo | to_json }}
+        branch: {{ fleet_bootstrap_branch | to_json }}
+        # Each top-level directory with a fleet.yaml is a bundle. Without paths, Fleet also makes the repository root
+        # a bundle, which takes in the subdirectories' files too.
+        paths: ["*"]
+      {% if fleet_bootstrap_github_token | length > 0 %}
+        clientSecretName: {{ fleet_bootstrap_secret_name }}
+      {% endif %}
+
+# .status.commit is set once Fleet has cloned the branch; until then its conditions say why not (e.g. a bad token).
+- name: Wait for Fleet to clone the repository
+  ansible.builtin.command:
+    argv: [/var/lib/rancher/rke2/bin/kubectl, --kubeconfig, /etc/rancher/rke2/rke2.yaml, -n, fleet-local, get,
+           gitrepo, "{{ fleet_bootstrap_name }}", -o, "jsonpath={.status.commit}"]
+  become: true
+  register: fleet_bootstrap_commit
+  until: fleet_bootstrap_commit.stdout | length > 0
+  retries: "{{ fleet_bootstrap_wait_retries }}"
+  delay: 10
+  changed_when: false
+  failed_when: false
+
+- name: Read why Fleet can't clone the repository
+  ansible.builtin.command:
+    argv: [/var/lib/rancher/rke2/bin/kubectl, --kubeconfig, /etc/rancher/rke2/rke2.yaml, -n, fleet-local, get,
+           gitrepo, "{{ fleet_bootstrap_name }}", -o,
+           "jsonpath={range .status.conditions[*]}{.type}={.status}: {.message}{'\\n'}{end}"]
+  become: true
+  register: fleet_bootstrap_conditions
+  changed_when: false
+  failed_when: false
+  when: fleet_bootstrap_commit.stdout | default('') | length == 0
+
+- name: Report a repository Fleet can't clone
+  ansible.builtin.fail:
+    msg: >-
+      Fleet hasn't cloned {{ fleet_bootstrap_repo }} ({{ fleet_bootstrap_branch }}) after
+      {{ fleet_bootstrap_wait_retries * 10 }} seconds. GitRepo conditions:
+      {{ fleet_bootstrap_conditions.stdout_lines | default([]) | join(' | ') }}
+  when: fleet_bootstrap_commit.stdout | default('') | length == 0
+
+- name: Report the commit Fleet deploys
+  ansible.builtin.debug:
+    msg: >-
+      Fleet deploys {{ fleet_bootstrap_repo }} at {{ fleet_bootstrap_commit.stdout[:12] }}. Its bundles:
+      kubectl -n fleet-local get bundles (or Rancher → Continuous Delivery).
