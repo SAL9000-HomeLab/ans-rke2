@@ -5,6 +5,11 @@ pushing a `vX.Y.Z` tag; the release workflow publishes the matching section.
 
 ## [Unreleased]
 
+- Added: cluster add-ons, each switched on by its variables: kube-vip LoadBalancer services through kube-vip's cloud
+  provider (`kube_vip_lb_range`), a fixed LoadBalancer address for RKE2's Traefik (`rke2_traefik` role), cert-manager
+  v1.21 with Let's Encrypt issuers using Cloudflare DNS-01 (`cert_manager`), and Rancher 2.15 behind Traefik with a
+  cert-manager certificate and an IP allowlist (`rancher`). The kube-vip play now updates one server at a time.
+  The README describes the AWX/Ascender credential type for the Cloudflare API token.
 - Added: `site.yml` with the `rke2_cluster` and `kube_vip` roles: builds an RKE2 cluster from `rke2_servers` and
   `rke2_agents` on hosts with RKE2 installed (vm-templates' `tpl-rocky-10-rke2`). Finds an existing cluster before
   doing anything (and refuses to start a second one while a server is unreachable), starts the first server, joins

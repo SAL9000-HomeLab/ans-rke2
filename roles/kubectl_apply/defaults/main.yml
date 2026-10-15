@@ -1,0 +1,16 @@
+---
+# roles/kubectl_apply/defaults/main.yml
+# Applies Kubernetes manifests with RKE2's kubectl on the host it runs on (an RKE2 server). The other roles include
+# it; it isn't meant to be listed in a play.
+
+# The manifests, as one YAML string (several documents separated by ---).
+kubectl_apply_manifest: ""
+
+# What the manifests are, for the task name.
+kubectl_apply_name: manifests
+
+# true hides the manifests and the result from the log (for Secrets).
+kubectl_apply_no_log: false
+
+kubectl_apply_kubectl: /var/lib/rancher/rke2/bin/kubectl
+kubectl_apply_kubeconfig: /etc/rancher/rke2/rke2.yaml

@@ -1,0 +1,154 @@
+---
+# roles/rancher/tasks/main.yml
+# Install Rancher behind RKE2's Traefik: a cert-manager certificate for rancher_hostname, an IP allowlist, and the
+# Rancher chart. Runs on a server, after cert_manager.
+
+- name: Check the Rancher settings
+  ansible.builtin.assert:
+    that:
+      - rancher_hostname is match('^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$')
+    fail_msg: "Rancher needs rancher_hostname, the DNS name it's served on (e.g. rancher.app.example.com)."
+    quiet: true
+
+- name: Build the Rancher chart values
+  vars:
+    rancher_base_values:
+      hostname: "{{ rancher_hostname }}"
+      ingress:
+        ingressClassName: traefik
+        tls:
+          source: secret
+          secretName: tls-rancher-ingress
+        extraAnnotations:
+          traefik.ingress.kubernetes.io/router.entrypoints: websecure
+    rancher_allowlist_values:
+      ingress:
+        extraAnnotations:
+          traefik.ingress.kubernetes.io/router.middlewares: cattle-system-rancher-allowlist@kubernetescrd
+    rancher_password_values:
+      bootstrapPassword: "{{ rancher_bootstrap_password }}"
+  # replicas is added in the expression: a templated value in vars stays a string on ansible-core 2.16, and the
+  # HelmChart would then differ (and upgrade Rancher) between 2.16 and later versions.
+  ansible.builtin.set_fact:
+    rancher_chart_values: >-
+      {{ rancher_base_values
+         | combine({'replicas': rancher_replicas | int})
+         | combine(rancher_allowlist_values if rancher_allowed_source_ranges | length > 0 else {}, recursive=true)
+         | combine(rancher_password_values if rancher_bootstrap_password | length > 0 else {})
+         | combine(rancher_values, recursive=true) }}
+  no_log: true
+
+- name: Create Rancher's namespace, certificate and allowlist
+  ansible.builtin.include_role:
+    name: kubectl_apply
+  vars:
+    kubectl_apply_name: Rancher's namespace, certificate and allowlist
+    kubectl_apply_manifest: |
+      # Managed by ans-rke2 (rancher).
+      apiVersion: v1
+      kind: Namespace
+      metadata:
+        name: cattle-system
+      ---
+      apiVersion: cert-manager.io/v1
+      kind: Certificate
+      metadata:
+        name: tls-rancher-ingress
+        namespace: cattle-system
+      spec:
+        secretName: tls-rancher-ingress
+        dnsNames:
+          - {{ rancher_hostname }}
+        issuerRef:
+          kind: ClusterIssuer
+          name: {{ rancher_cluster_issuer }}
+      {% if rancher_allowed_source_ranges | length > 0 %}
+      ---
+      apiVersion: traefik.io/v1alpha1
+      kind: Middleware
+      metadata:
+        name: rancher-allowlist
+        namespace: cattle-system
+      spec:
+        ipAllowList:
+          sourceRange: {{ rancher_allowed_source_ranges | to_json }}
+      {% endif %}
+
+- name: Install Rancher
+  ansible.builtin.include_role:
+    name: kubectl_apply
+  vars:
+    kubectl_apply_name: the Rancher HelmChart
+    kubectl_apply_no_log: "{{ rancher_bootstrap_password | length > 0 }}"
+    kubectl_apply_manifest: |
+      # Managed by ans-rke2 (rancher).
+      apiVersion: helm.cattle.io/v1
+      kind: HelmChart
+      metadata:
+        name: rancher
+        namespace: kube-system
+      spec:
+        repo: https://releases.rancher.com/server-charts/stable
+        chart: rancher
+        version: {{ rancher_version }}
+        targetNamespace: cattle-system
+        valuesContent: |-
+          {{ rancher_chart_values | to_nice_yaml(indent=2) | indent(4) }}
+
+- name: Wait for Rancher's certificate
+  ansible.builtin.command:
+    argv:
+      - /var/lib/rancher/rke2/bin/kubectl
+      - --kubeconfig
+      - /etc/rancher/rke2/rke2.yaml
+      - -n
+      - cattle-system
+      - get
+      - certificate
+      - tls-rancher-ingress
+      - -o
+      - jsonpath={.status.conditions[?(@.type=="Ready")].status}
+  become: true
+  register: rancher_certificate
+  until: rancher_certificate.stdout == 'True'
+  retries: "{{ rancher_wait_retries }}"
+  delay: 10
+  changed_when: false
+  failed_when: false
+
+- name: Report a certificate that wasn't issued
+  ansible.builtin.fail:
+    msg: >-
+      Rancher's certificate for {{ rancher_hostname }} isn't Ready after {{ rancher_wait_retries * 10 }} seconds.
+      On a server: kubectl -n cattle-system describe certificate tls-rancher-ingress, then kubectl get challenges -A
+      and kubectl describe challenge <name> (DNS-01 errors from Cloudflare show there).
+  when: rancher_certificate.stdout | default('') != 'True'
+
+- name: Wait for Rancher to start
+  ansible.builtin.command:
+    argv:
+      - /var/lib/rancher/rke2/bin/kubectl
+      - --kubeconfig
+      - /etc/rancher/rke2/rke2.yaml
+      - -n
+      - cattle-system
+      - rollout
+      - status
+      - deployment/rancher
+      - --timeout=10s
+  become: true
+  register: rancher_rollout
+  until: rancher_rollout.rc == 0
+  retries: "{{ rancher_wait_retries }}"
+  delay: 10
+  changed_when: false
+
+- name: Show how to log in
+  vars:
+    rancher_password_command: >-
+      kubectl -n cattle-system get secret bootstrap-secret -o jsonpath={.data.bootstrapPassword} | base64 -d
+  ansible.builtin.debug:
+    msg: >-
+      Rancher is at https://{{ rancher_hostname }}/.
+      {{ 'Log in with rancher_bootstrap_password.' if rancher_bootstrap_password | length > 0
+         else 'First-login password, on a server: ' ~ rancher_password_command }}

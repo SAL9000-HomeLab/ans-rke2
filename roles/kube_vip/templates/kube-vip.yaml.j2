@@ -1,4 +1,5 @@
-# Managed by ans-rke2 (kube_vip). Based on `kube-vip manifest pod --controlplane --arp --leaderElection`.
+# Managed by ans-rke2 (kube_vip). Based on `kube-vip manifest pod --controlplane [--services --servicesElection]
+# --arp --leaderElection`.
 apiVersion: v1
 kind: Pod
 metadata:
@@ -32,6 +33,14 @@ spec:
           value: "true"
         - name: cp_namespace
           value: kube-system
+{% if kube_vip_services_enabled | bool %}
+        - name: svc_enable
+          value: "true"
+        - name: svc_leasename
+          value: plndr-svcs-lock
+        - name: svc_election
+          value: "true"
+{% endif %}
         - name: vip_leaderelection
           value: "true"
         - name: vip_leasename

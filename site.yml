@@ -12,10 +12,12 @@
         name: rke2_cluster
         tasks_from: discover.yml
 
+# One server at a time: a changed manifest restarts kube-vip, and the API address must stay up.
 - name: Run kube-vip on the servers
   hosts: rke2_servers
   become: true
   gather_facts: false
+  serial: 1
   roles:
     - role: kube_vip
 
@@ -60,3 +62,31 @@
       ansible.builtin.include_role:
         name: rke2_cluster
         tasks_from: labels.yml
+
+# Cluster add-ons, each switched on by its variables: kube-vip's cloud provider (kube_vip_lb_range), Traefik's
+# LoadBalancer address (rke2_traefik_lb_ip), cert-manager (cert_manager_enabled) and Rancher (rancher_enabled).
+- name: Install the cluster add-ons
+  hosts: rke2_cluster_init
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Deploy kube-vip's cloud provider for LoadBalancer services
+      ansible.builtin.include_role:
+        name: kube_vip
+        tasks_from: cloud_provider.yml
+      when: kube_vip_lb_range | default('') | length > 0
+
+    - name: Give Traefik its LoadBalancer address
+      ansible.builtin.include_role:
+        name: rke2_traefik
+      when: rke2_traefik_lb_ip | default('') | length > 0
+
+    - name: Install cert-manager
+      ansible.builtin.include_role:
+        name: cert_manager
+      when: cert_manager_enabled | default(false) | bool
+
+    - name: Install Rancher
+      ansible.builtin.include_role:
+        name: rancher
+      when: rancher_enabled | default(false) | bool

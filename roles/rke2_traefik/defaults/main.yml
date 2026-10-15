@@ -1,0 +1,18 @@
+---
+# roles/rke2_traefik/defaults/main.yml
+# Settings for the Traefik ingress controller RKE2 deploys (its rke2-traefik chart), applied through a
+# HelmChartConfig.
+
+# Fixed LoadBalancer address for Traefik (ports 80 and 443), held by kube-vip. Point the DNS names of the apps it
+# serves at it. Empty leaves Traefik as RKE2 sets it up (host ports 80/443 on every node, no LoadBalancer).
+rke2_traefik_lb_ip: ""
+
+# Local keeps the clients' source addresses (needed for IP allowlists); kube-vip then announces the address from a
+# node running Traefik, which is every node (Traefik is a DaemonSet).
+rke2_traefik_external_traffic_policy: Local
+
+# More chart values merged into the HelmChartConfig (https://github.com/traefik/traefik-helm-chart).
+rke2_traefik_values: {}
+
+# How long to wait for the LoadBalancer address (retries x 10 seconds).
+rke2_traefik_wait_retries: 30

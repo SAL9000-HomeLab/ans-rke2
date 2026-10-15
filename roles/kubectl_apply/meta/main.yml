@@ -1,0 +1,16 @@
+---
+galaxy_info:
+  author: Roland Serman
+  description: Applies Kubernetes manifests with RKE2's kubectl on a server, reporting changes from kubectl's output
+  license: MIT
+  min_ansible_version: "2.16"
+  platforms:
+    - name: EL
+      versions:
+        - "9"
+        - "10"
+  galaxy_tags:
+    - kubernetes
+    - rke2
+
+dependencies: []

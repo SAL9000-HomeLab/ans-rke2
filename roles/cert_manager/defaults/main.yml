@@ -1,0 +1,30 @@
+---
+# roles/cert_manager/defaults/main.yml
+
+# true installs cert-manager (through RKE2's Helm controller) and the Let's Encrypt issuers below.
+cert_manager_enabled: false
+
+# cert-manager release (https://cert-manager.io/docs/releases/): 1.21 supports Kubernetes 1.33-1.36.
+cert_manager_version: v1.21.2
+
+# Let's Encrypt account email (expiry and policy notices). Required.
+cert_manager_acme_email: ""
+
+# Cloudflare API token for the DNS-01 challenge. Secret (an AWX credential). Create it in Cloudflare under My Profile
+# -> API Tokens with Zone / DNS / Edit and Zone / Zone / Read on the zones certificates are issued for. Required.
+cert_manager_cloudflare_api_token: ""
+
+# Resolvers cert-manager asks to check that a challenge's TXT record is visible before Let's Encrypt validates it.
+# Public resolvers, because internal DNS servers that host the same names (split horizon) never see the TXT records.
+cert_manager_dns01_recursive_nameservers:
+  - 1.1.1.1:53
+  - 1.0.0.1:53
+
+# The ClusterIssuers created: letsencrypt-staging (untrusted test certificates, generous rate limits) and
+# letsencrypt-production.
+cert_manager_issuers:
+  letsencrypt-staging: https://acme-staging-v02.api.letsencrypt.org/directory
+  letsencrypt-production: https://acme-v02.api.letsencrypt.org/directory
+
+# How long to wait for cert-manager to start and its issuers to register (retries x 10 seconds).
+cert_manager_wait_retries: 60
