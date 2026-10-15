@@ -137,16 +137,44 @@ RKE2's Traefik is a DaemonSet that also listens on ports 80/443 of every node; t
 | --- | --- | --- |
 | `cert_manager_enabled` | `false` | |
 | `cert_manager_acme_email` | **required** | Let's Encrypt account email. |
-| `cert_manager_cloudflare_api_token` | **required, secret** | See below. |
+| `cert_manager_cloudflare_api_token` | **required, secret** | From an AWX/Ascender credential: see [The Cloudflare API token](#the-cloudflare-api-token). |
 | `cert_manager_version` | `v1.21.2` | 1.21 supports Kubernetes 1.33–1.36. |
 | `cert_manager_dns01_recursive_nameservers` | `[1.1.1.1:53, 1.0.0.1:53]` | Where cert-manager checks a challenge's TXT record is visible. Public resolvers: internal DNS that hosts the same names (split horizon) never sees the TXT records, and the check would never pass. |
 | `cert_manager_issuers` | `letsencrypt-staging`, `letsencrypt-production` | `ClusterIssuer` name → ACME directory URL. |
 
-The Cloudflare token: in Cloudflare, **My Profile → API Tokens → Create Token** with the permissions
-**Zone / DNS / Edit** and **Zone / Zone / Read**, limited to the zone(s) certificates are issued for. Give it to the
-job through an AWX/Ascender credential (a custom credential type injecting `cert_manager_cloudflare_api_token` as an
-extra var), never in the inventory. DNS-01 works for names that exist only in internal DNS: Let's Encrypt only looks
-up the `_acme-challenge` TXT record in the public zone.
+#### The Cloudflare API token
+
+1. In Cloudflare, under **My Profile → API Tokens → Create Token**, create a custom token with the permissions
+   **Zone / DNS / Edit** and **Zone / Zone / Read**, and under **Zone Resources** include only the zone(s)
+   certificates are issued for (e.g. `example.com`).
+2. Give it to the job through an AWX/Ascender credential, never in the inventory or the repository. Under
+   **Administration → Credential Types → Add**, name it `Cloudflare API token (cert-manager)` and paste:
+
+   ```yaml
+   # Input configuration
+   fields:
+     - id: cert_manager_cloudflare_api_token
+       label: Cloudflare API token
+       type: string
+       secret: true
+       help_text: Zone / DNS / Edit and Zone / Zone / Read on the zones certificates are issued for
+   required:
+     - cert_manager_cloudflare_api_token
+   ```
+
+   ```yaml
+   # Injector configuration
+   extra_vars:
+     cert_manager_cloudflare_api_token: "{{ cert_manager_cloudflare_api_token }}"
+   ```
+
+3. Under **Resources → Credentials → Add**, create a credential of type `Cloudflare API token (cert-manager)` with
+   the token.
+4. Attach it to the `site.yml` job template, next to the Machine credential (the SSH key for the nodes).
+
+The job stores the token in the cluster as the Secret `cloudflare-api-token` in the `cert-manager` namespace and
+updates it when the credential changes; it never appears in the job log. DNS-01 works for names that exist only in
+internal DNS: Let's Encrypt only looks up the `_acme-challenge` TXT record in the public zone.
 
 ### rancher
 
