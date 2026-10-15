@@ -1,0 +1,18 @@
+---
+galaxy_info:
+  author: Roland Serman
+  description: Installs ceph-csi (RBD and CephFS) on RKE2 against an existing Ceph cluster such as Proxmox's
+  license: MIT
+  min_ansible_version: "2.16"
+  platforms:
+    - name: EL
+      versions:
+        - "9"
+        - "10"
+  galaxy_tags:
+    - kubernetes
+    - rke2
+    - ceph
+    - storage
+
+dependencies: []

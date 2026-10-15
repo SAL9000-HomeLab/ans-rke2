@@ -1,0 +1,116 @@
+---
+# roles/ceph_csi/tasks/driver.yml
+# One ceph-csi driver (ceph_csi_driver: rbd or cephfs): namespace and Secret, HelmChart, wait, check.
+
+- name: Build the chart values for {{ ceph_csi_driver.name }}
+  vars:
+    ceph_csi_metrics_port: >-
+      {{ ceph_csi_rbd_metrics_port if ceph_csi_driver.name == 'rbd' else ceph_csi_cephfs_metrics_port }}
+    ceph_csi_common_values:
+      secret:
+        create: false
+        name: csi-{{ ceph_csi_driver.name }}-secret
+      storageClass:
+        create: true
+        name: "{{ ceph_csi_driver.storage_class }}"
+        clusterID: "{{ ceph_csi_cluster_id }}"
+        reclaimPolicy: "{{ ceph_csi_reclaim_policy }}"
+        allowVolumeExpansion: true
+        annotations: >-
+          {{ {'storageclass.kubernetes.io/is-default-class': 'true'}
+             if ceph_csi_driver.name == 'rbd' and ceph_csi_rbd_default_class | bool else {} }}
+    ceph_csi_rbd_values:
+      csiConfig:
+        - clusterID: "{{ ceph_csi_cluster_id }}"
+          monitors: "{{ ceph_csi_monitors }}"
+      storageClass:
+        pool: "{{ ceph_csi_rbd_pool }}"
+        imageFeatures: "{{ ceph_csi_rbd_image_features }}"
+        fstype: "{{ ceph_csi_rbd_fstype }}"
+        mounter: "{{ '' if ceph_csi_rbd_mounter == 'krbd' else ceph_csi_rbd_mounter }}"
+    ceph_csi_cephfs_values:
+      csiConfig:
+        - clusterID: "{{ ceph_csi_cluster_id }}"
+          monitors: "{{ ceph_csi_monitors }}"
+          cephFS:
+            subvolumeGroup: "{{ ceph_csi_cephfs_subvolume_group }}"
+      storageClass:
+        fsName: "{{ ceph_csi_cephfs_fs_name }}"
+        mounter: "{{ ceph_csi_cephfs_mounter }}"
+  # The metrics port is set in the expression: a templated number in vars stays a string on ansible-core 2.16, and
+  # the HelmChart would then differ (and upgrade the driver) between 2.16 and later versions.
+  ansible.builtin.set_fact:
+    ceph_csi_chart_values: >-
+      {{ ceph_csi_common_values
+         | combine(ceph_csi_rbd_values if ceph_csi_driver.name == 'rbd' else ceph_csi_cephfs_values,
+                   recursive=true)
+         | combine({'nodeplugin': {'httpMetrics': {'containerPort': ceph_csi_metrics_port | int} } }, recursive=true) }}
+
+- name: Store the Ceph key for {{ ceph_csi_driver.name }}
+  ansible.builtin.include_role:
+    name: kubectl_apply
+  vars:
+    kubectl_apply_name: the ceph-csi-{{ ceph_csi_driver.name }} namespace and Secret
+    kubectl_apply_no_log: true
+    kubectl_apply_manifest: |
+      apiVersion: v1
+      kind: Namespace
+      metadata:
+        name: ceph-csi-{{ ceph_csi_driver.name }}
+      ---
+      apiVersion: v1
+      kind: Secret
+      metadata:
+        name: csi-{{ ceph_csi_driver.name }}-secret
+        namespace: ceph-csi-{{ ceph_csi_driver.name }}
+      type: Opaque
+      data:
+        userID: {{ ceph_csi_driver.user | b64encode }}
+        userKey: {{ ceph_csi_driver.key | b64encode }}
+
+- name: Install ceph-csi-{{ ceph_csi_driver.name }}
+  ansible.builtin.include_role:
+    name: kubectl_apply
+  vars:
+    kubectl_apply_name: the ceph-csi-{{ ceph_csi_driver.name }} HelmChart
+    kubectl_apply_manifest: |
+      # Managed by ans-rke2 (ceph_csi).
+      apiVersion: helm.cattle.io/v1
+      kind: HelmChart
+      metadata:
+        name: ceph-csi-{{ ceph_csi_driver.name }}
+        namespace: kube-system
+      spec:
+        repo: https://ceph.github.io/csi-charts
+        chart: ceph-csi-{{ ceph_csi_driver.name }}
+        version: {{ ceph_csi_version }}
+        targetNamespace: ceph-csi-{{ ceph_csi_driver.name }}
+        valuesContent: |-
+          {{ ceph_csi_chart_values | to_nice_yaml(indent=2) | indent(4) }}
+
+- name: Wait for the driver's provisioner
+  ansible.builtin.command:
+    argv:
+      - /var/lib/rancher/rke2/bin/kubectl
+      - --kubeconfig
+      - /etc/rancher/rke2/rke2.yaml
+      - -n
+      - ceph-csi-{{ ceph_csi_driver.name }}
+      - rollout
+      - status
+      - deployment/ceph-csi-{{ ceph_csi_driver.name }}-provisioner
+      - --timeout=10s
+  become: true
+  register: ceph_csi_rollout
+  until: ceph_csi_rollout.rc == 0
+  retries: "{{ ceph_csi_wait_retries }}"
+  delay: 10
+  changed_when: false
+
+- name: Check the driver's StorageClass
+  ansible.builtin.include_role:
+    name: storage_check
+  vars:
+    storage_check_class: "{{ ceph_csi_driver.storage_class }}"
+    storage_check_access_mode: "{{ ceph_csi_driver.access_mode }}"
+  when: ceph_csi_check | bool

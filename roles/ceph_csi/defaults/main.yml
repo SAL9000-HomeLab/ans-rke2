@@ -1,0 +1,72 @@
+---
+# roles/ceph_csi/defaults/main.yml
+# Ceph storage from an existing Ceph cluster (e.g. Proxmox's): RBD block volumes and/or CephFS shared volumes through
+# ceph-csi. See the README's "Preparing Ceph" for the pool, filesystem and users to create first.
+
+# true installs the driver(s) (through RKE2's Helm controller) and their StorageClasses.
+ceph_csi_enabled: false
+
+# ceph-csi release (https://github.com/ceph/ceph-csi/releases); also the version of the ceph-csi-rbd and
+# ceph-csi-cephfs charts.
+ceph_csi_version: 3.18.1
+
+# The Ceph cluster: its fsid (`ceph fsid`) and monitor addresses (`ceph mon dump`), e.g. ["192.0.2.11:6789", ...].
+# The nodes must reach them (the Ceph public network). Both required for either driver.
+ceph_csi_cluster_id: ""
+ceph_csi_monitors: []
+
+# --- RBD (block volumes, ReadWriteOnce) -----------------------------------------------------------------------------
+
+# RBD pool for the volumes. Empty: no RBD driver.
+ceph_csi_rbd_pool: ""
+
+# Ceph user (without "client.") with `profile rbd` on the pool, and its key (secret, from an AWX credential).
+ceph_csi_rbd_user: k8s-rbd
+ceph_csi_rbd_key: ""
+
+ceph_csi_rbd_storage_class: ceph-rbd
+
+# true makes the RBD StorageClass the cluster default (used by claims that don't name a class).
+ceph_csi_rbd_default_class: true
+
+ceph_csi_rbd_fstype: ext4
+
+ceph_csi_rbd_image_features: layering,exclusive-lock,object-map,fast-diff,deep-flatten
+
+# How nodes attach RBD volumes: rbd-nbd (userspace librbd) or krbd (the kernel client, faster). Current Ceph gives
+# users aes256k keys (the fix for CVE-2025-30156), which the kernel clients only support from Linux 7.0; Rocky 10's
+# kernel is 6.12, so rbd-nbd. Use krbd once the nodes' kernel supports aes256k.
+ceph_csi_rbd_mounter: rbd-nbd
+
+# --- CephFS (shared volumes, ReadWriteMany) --------------------------------------------------------------------------
+
+# CephFS filesystem name. Empty: no CephFS driver.
+ceph_csi_cephfs_fs_name: ""
+
+# Subvolume group the volumes go in. It must exist (ceph fs subvolumegroup create <fs> csi).
+ceph_csi_cephfs_subvolume_group: csi
+
+# Ceph user (without "client.") with ceph-csi's CephFS capabilities, and its key (secret).
+ceph_csi_cephfs_user: k8s-cephfs
+ceph_csi_cephfs_key: ""
+
+ceph_csi_cephfs_storage_class: ceph-cephfs
+
+# How nodes mount CephFS volumes: fuse (ceph-fuse, userspace) or kernel. fuse for the same reason as rbd-nbd above.
+ceph_csi_cephfs_mounter: fuse
+
+# --- Both -----------------------------------------------------------------------------------------------------------
+
+# Metrics ports of the node plugins. They use the host network, so the ports are taken on every node: the CephFS
+# chart's default, 8081, is where Canal's flanneld listens on RKE2, and the plugin would never start.
+ceph_csi_rbd_metrics_port: 8080
+ceph_csi_cephfs_metrics_port: 8082
+
+# Delete removes a volume's data when its claim is deleted; Retain keeps it (the PersistentVolume stays Released).
+ceph_csi_reclaim_policy: Delete
+
+# Provision, mount and write a test volume on each StorageClass after installing.
+ceph_csi_check: true
+
+# How long to wait for the drivers to start (retries x 10 seconds).
+ceph_csi_wait_retries: 60

@@ -1,0 +1,17 @@
+---
+# roles/storage_check/defaults/main.yml
+# Proves a StorageClass works end to end: a 1 GiB PersistentVolumeClaim must be provisioned, and a pod must mount it
+# and write to it. The test namespace is deleted afterwards. The storage roles include it; it isn't meant to be listed
+# in a play.
+
+# StorageClass to test. Required.
+storage_check_class: ""
+
+# Access mode for the test claim (ReadWriteOnce, or ReadWriteMany for shared storage).
+storage_check_access_mode: ReadWriteOnce
+
+# Image for the test pod.
+storage_check_image: docker.io/library/busybox:1.37
+
+# How long to wait for the claim to be bound and the pod to write (retries x 10 seconds).
+storage_check_retries: 30

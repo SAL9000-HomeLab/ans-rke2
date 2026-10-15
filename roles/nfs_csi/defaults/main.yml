@@ -1,0 +1,37 @@
+---
+# roles/nfs_csi/defaults/main.yml
+# NFS storage from an existing NFS share (e.g. a Synology shared folder) through csi-driver-nfs: each volume is a
+# subdirectory of the share. See the README's "Preparing the NFS share".
+
+# true installs the driver(s) (through RKE2's Helm controller) and their StorageClasses.
+nfs_csi_enabled: false
+
+# csi-driver-nfs release (https://github.com/kubernetes-csi/csi-driver-nfs/releases); also its chart version.
+nfs_csi_version: 4.13.5
+
+# The NFS server (an address the nodes reach, e.g. the NAS on the storage network) and the exported path, e.g.
+# /volume1/k8s. Both required.
+nfs_csi_server: ""
+nfs_csi_share: ""
+
+nfs_csi_storage_class: nas-nfs
+
+# Each volume's subdirectory on the share; the driver fills in the ${...} fields.
+nfs_csi_sub_dir: ${pvc.metadata.namespace}-${pvc.metadata.name}-${pv.metadata.name}
+
+# What happens to a volume's subdirectory when its claim is deleted: archive (renamed archived-<name>, the default),
+# retain (left as it is) or delete.
+nfs_csi_on_delete: archive
+
+nfs_csi_mount_options:
+  - nfsvers=4.1
+  - hard
+
+# Controller replicas (the provisioner; one is active at a time).
+nfs_csi_controller_replicas: 2
+
+# Provision, mount and write a test volume after installing.
+nfs_csi_check: true
+
+# How long to wait for the driver to start (retries x 10 seconds).
+nfs_csi_wait_retries: 60

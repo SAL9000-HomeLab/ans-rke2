@@ -1,0 +1,89 @@
+---
+# roles/nfs_csi/tasks/main.yml
+# Install csi-driver-nfs through RKE2's Helm controller and a StorageClass for the share. Runs on a server.
+
+- name: Check the NFS settings
+  ansible.builtin.assert:
+    that:
+      - nfs_csi_server | length > 0
+      - nfs_csi_share is match('^/')
+      - nfs_csi_on_delete in ['archive', 'retain', 'delete']
+    fail_msg: >-
+      csi-driver-nfs needs nfs_csi_server (the NFS server's address) and nfs_csi_share (the exported path, e.g.
+      /volume1/k8s); nfs_csi_on_delete is archive, retain or delete.
+    quiet: true
+
+# RKE2 already runs a snapshot controller, so the chart's is left off.
+- name: Install csi-driver-nfs
+  ansible.builtin.include_role:
+    name: kubectl_apply
+  vars:
+    kubectl_apply_name: the csi-driver-nfs HelmChart
+    kubectl_apply_manifest: |
+      # Managed by ans-rke2 (nfs_csi).
+      apiVersion: helm.cattle.io/v1
+      kind: HelmChart
+      metadata:
+        name: csi-driver-nfs
+        namespace: kube-system
+      spec:
+        repo: https://raw.githubusercontent.com/kubernetes-csi/csi-driver-nfs/master/charts
+        chart: csi-driver-nfs
+        version: {{ nfs_csi_version }}
+        targetNamespace: kube-system
+        valuesContent: |-
+          controller:
+            replicas: {{ nfs_csi_controller_replicas | int }}
+          externalSnapshotter:
+            enabled: false
+
+# A StorageClass's parameters can't be changed in place: delete the class (volumes keep working) and re-run to
+# change them.
+- name: Create the NFS StorageClass
+  ansible.builtin.include_role:
+    name: kubectl_apply
+  vars:
+    kubectl_apply_name: the {{ nfs_csi_storage_class }} StorageClass
+    kubectl_apply_manifest: |
+      # Managed by ans-rke2 (nfs_csi).
+      apiVersion: storage.k8s.io/v1
+      kind: StorageClass
+      metadata:
+        name: {{ nfs_csi_storage_class }}
+      provisioner: nfs.csi.k8s.io
+      parameters:
+        server: {{ nfs_csi_server | to_json }}
+        share: {{ nfs_csi_share | to_json }}
+        subDir: {{ nfs_csi_sub_dir | to_json }}
+        onDelete: {{ nfs_csi_on_delete }}
+      reclaimPolicy: Delete
+      volumeBindingMode: Immediate
+      allowVolumeExpansion: true
+      mountOptions: {{ nfs_csi_mount_options | to_json }}
+
+- name: Wait for the csi-driver-nfs controller
+  ansible.builtin.command:
+    argv:
+      - /var/lib/rancher/rke2/bin/kubectl
+      - --kubeconfig
+      - /etc/rancher/rke2/rke2.yaml
+      - -n
+      - kube-system
+      - rollout
+      - status
+      - deployment/csi-nfs-controller
+      - --timeout=10s
+  become: true
+  register: nfs_csi_rollout
+  until: nfs_csi_rollout.rc == 0
+  retries: "{{ nfs_csi_wait_retries }}"
+  delay: 10
+  changed_when: false
+
+- name: Check the NFS StorageClass
+  ansible.builtin.include_role:
+    name: storage_check
+  vars:
+    storage_check_class: "{{ nfs_csi_storage_class }}"
+    storage_check_access_mode: ReadWriteMany
+  when: nfs_csi_check | bool

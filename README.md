@@ -12,6 +12,9 @@ changed settings are applied one node at a time.
 | [rke2_cluster](roles/rke2_cluster) | Writes each node's `/etc/rancher/rke2/config.yaml`, starts the first server, joins the other servers and the agents one at a time, waits for each node to be Ready, and keeps node labels (including the zone) set |
 | [kube_vip](roles/kube_vip) | Runs kube-vip as a static pod on every server; the elected leader answers ARP for the API address, and (with `kube_vip_lb_range`) for LoadBalancer service addresses handed out by kube-vip's cloud provider |
 | [rke2_traefik](roles/rke2_traefik) | Gives RKE2's Traefik a fixed LoadBalancer address (`HelmChartConfig`) |
+| [ceph_csi](roles/ceph_csi) | Installs ceph-csi against an existing Ceph cluster (e.g. Proxmox's): RBD block volumes (`ceph-rbd`, the default class) and CephFS shared volumes (`ceph-cephfs`) |
+| [nfs_csi](roles/nfs_csi) | Installs csi-driver-nfs with a StorageClass (`nas-nfs`) on an existing NFS share (e.g. a Synology shared folder) |
+| [storage_check](roles/storage_check) | Helper the storage roles use: provisions a test volume and writes to it from a pod |
 | [cert_manager](roles/cert_manager) | Installs cert-manager and Let's Encrypt `ClusterIssuer`s that solve DNS-01 challenges through Cloudflare |
 | [rancher](roles/rancher) | Installs Rancher behind Traefik with a cert-manager certificate and an IP allowlist |
 | [kubectl_apply](roles/kubectl_apply) | Helper the others use to `kubectl apply` manifests on a server |
@@ -26,7 +29,10 @@ token), re-running unchanged, setting labels, a run limited to one agent, a run 
 kube-vip moving the API address to another server (about 25 seconds). The add-ons (cloud provider v0.0.13,
 cert-manager v1.21.2, Rancher 2.15.2) were tested the same way: Traefik on its LoadBalancer address, Rancher answering
 through it with its cert-manager certificate, the allowlist returning 403 to other clients, and re-runs unchanged on
-both ansible-core versions. The Let's Encrypt/Cloudflare issuance itself was not part of that test.
+both ansible-core versions. The Let's Encrypt/Cloudflare issuance itself was not part of that test. The storage
+add-ons were tested against a single-node Ceph 19.2.7 (aes256k keys, users created as in "Preparing Ceph") and a kernel
+NFS server: each StorageClass's check passed (RBD through `rbd-nbd`, CephFS through `ceph-fuse`, NFS archived on
+delete).
 
 ## Requirements
 
@@ -113,11 +119,186 @@ reach.
 A service can ask for a fixed address with the annotation `kube-vip.io/loadbalancerIPs: <address>`; it doesn't have
 to be in the range (Traefik's is outside it).
 
+## Storage
+
+Three StorageClasses, each from storage outside the cluster:
+
+| StorageClass | Driver | Access | Use it for |
+| --- | --- | --- | --- |
+| `ceph-rbd` (default) | ceph-csi RBD | ReadWriteOnce | Databases and anything one pod uses: replicated across the Proxmox hosts, fast. |
+| `ceph-cephfs` | ceph-csi CephFS | ReadWriteMany | Volumes several pods share, highly available. |
+| `nas-nfs` | csi-driver-nfs | ReadWriteMany | Bulk and shared data on the NAS. The NAS is a single point of failure, and databases do badly on NFS. |
+
+A claim that names no StorageClass gets `ceph-rbd`. After installing each class, the job provisions a 1 GiB test
+volume, mounts it in a pod and writes to it, then deletes it, so a wrong key, address or share permission fails the
+job instead of the first app (turn it off with `ceph_csi_check` / `nfs_csi_check`).
+
+The nodes reach Ceph and the NAS directly: on Proxmox, give every node a NIC on the Ceph public network and one on the
+NAS storage network (proxmox-deploy's `extra_nics`). Pods' traffic to them leaves through those NICs.
+
+**Userspace Ceph clients.** Current Ceph releases give new users **aes256k** keys, the fix for CVE-2025-30156 (an
+authentication bypass in CephX's old AES cipher). The kernel's RBD and CephFS clients only support aes256k from
+Linux 7.0, and Rocky 10's kernel is 6.12 (it logs `libceph: secret too big 32` and refuses the key). So the nodes use
+the userspace clients, which do: `rbd-nbd` for RBD and `ceph-fuse` for CephFS (`ceph_csi_rbd_mounter`,
+`ceph_csi_cephfs_mounter`). Don't work around it by creating the users with `--key-type=aes`: that needs the old
+cipher allowed for authentication across the whole Ceph cluster (`auth_allowed_ciphers`), which keeps the CVE open
+for Proxmox too. Switch to `krbd` / `kernel` once the nodes' kernel supports aes256k.
+
+The userspace clients run inside the ceph-csi node plugin pods, so restarting a node plugin (an upgrade of ceph-csi,
+or a changed chart value) cuts the volumes mounted on that node. Drain a node before anything restarts its node
+plugins (`kubectl drain <node> --ignore-daemonsets --delete-emptydir-data`, then `kubectl uncordon <node>`). ceph-csi
+reattaches `rbd-nbd` volumes when its node plugin restarts; CephFS volumes need their pods restarted.
+
+### Preparing Ceph (Proxmox)
+
+Run these once, as root on any Proxmox node (`pveceph` is Proxmox's wrapper around the Ceph commands). The names
+(`k8s-rbd`, `cephfs`, `k8s-rbd` / `k8s-cephfs` users) are the role defaults; use your own consistently.
+
+1. **RBD pool** for block volumes (replicated 3/2 by default):
+
+   ```sh
+   pveceph pool create k8s-rbd --application rbd --add_storages 0
+   ```
+
+   `--add_storages 0` keeps it out of Proxmox's own storage list, so VM disks don't land in it.
+
+2. **CephFS** for shared volumes. Skip the first two commands if the cluster already has a CephFS (`ceph fs ls`) and
+   use its name. A metadata server (MDS) on each node gives one active and two standbys:
+
+   ```sh
+   pveceph mds create            # run on each Proxmox node
+   pveceph fs create --name cephfs --add-storage 0
+   ceph fs subvolumegroup create cephfs csi
+   ```
+
+   ceph-csi puts each volume in a subvolume of the group `csi` (`ceph_csi_cephfs_subvolume_group`), and since
+   ceph-csi 3.10 it no longer creates the group itself.
+
+3. **Ceph users** for Kubernetes, each limited to its pool or filesystem
+   ([ceph-csi capabilities](https://github.com/ceph/ceph-csi/blob/devel/docs/capabilities.md)):
+
+   ```sh
+   ceph auth get-or-create client.k8s-rbd \
+     mon 'profile rbd' \
+     osd 'profile rbd pool=k8s-rbd' \
+     mgr 'profile rbd pool=k8s-rbd'
+
+   ceph auth get-or-create client.k8s-cephfs \
+     mgr 'allow rw' \
+     osd 'allow rw tag cephfs metadata=cephfs, allow rw tag cephfs data=cephfs' \
+     mds 'allow r fsname=cephfs path=/volumes, allow rws fsname=cephfs path=/volumes/csi' \
+     mon 'allow r fsname=cephfs'
+   ```
+
+   (With a different filesystem name, replace every `cephfs` after `metadata=`, `data=` and `fsname=`.) Create them
+   without `--key-type`: the default aes256k key is what the userspace clients need (see above).
+
+4. **The values the job needs**:
+
+   ```sh
+   ceph fsid                          # -> ceph_csi_cluster_id
+   ceph mon dump | grep -o 'v1:[0-9.]*:6789' | cut -c4-   # -> ceph_csi_monitors
+   ceph auth get-key client.k8s-rbd; echo     # -> ceph_csi_rbd_key (secret)
+   ceph auth get-key client.k8s-cephfs; echo  # -> ceph_csi_cephfs_key (secret)
+   ```
+
+   The monitor addresses are on the Ceph public network (`public_network` in `/etc/pve/ceph.conf`).
+
+### Preparing the NFS share (Synology DSM 7)
+
+1. **Control Panel → File Services → NFS**: tick **Enable NFS service**, set **Maximum NFS protocol** to
+   **NFSv4.1**, and apply.
+2. **Control Panel → Shared Folder → Create**: e.g. `k8s` on the volume you want. Leave encryption off; the recycle
+   bin is optional (the driver archives deleted volumes anyway, see `nfs_csi_on_delete`).
+3. Select the folder, **Edit → NFS Permissions → Create**:
+
+   | Setting | Value | Why |
+   | --- | --- | --- |
+   | Hostname or IP | the nodes' storage network, e.g. `192.0.2.0/24` | Only the cluster nodes mount it. |
+   | Privilege | Read/Write | |
+   | Squash | **No mapping** | Containers run as root and change ownership (e.g. a database's data directory); squashing root breaks them. |
+   | Security | sys | |
+   | Enable asynchronous | ticked | Faster writes; DSM's default. |
+   | Allow connections from non-privileged ports | unticked | Linux clients use privileged ports. |
+   | Allow users to access mounted subfolders | **ticked** | Each volume is a subfolder that nodes mount on its own. |
+
+4. The dialog's footer shows the **Mount path**, e.g. `/volume1/k8s`: that's `nfs_csi_share`. `nfs_csi_server` is
+   the NAS's address on the storage network the nodes reach (not its management address).
+
+Snapshots of the folder (Snapshot Replication) and Hyper Backup cover the volumes on it, as for any shared folder.
+
+### The Ceph keys in AWX/Ascender
+
+Like the Cloudflare token, the Ceph keys come from a credential. **Administration → Credential Types → Add**, name it
+`Ceph keys (ceph-csi)`:
+
+```yaml
+# Input configuration
+fields:
+  - id: ceph_csi_rbd_key
+    label: Key of the RBD user (ceph auth get-key client.k8s-rbd)
+    type: string
+    secret: true
+  - id: ceph_csi_cephfs_key
+    label: Key of the CephFS user (ceph auth get-key client.k8s-cephfs)
+    type: string
+    secret: true
+```
+
+```yaml
+# Injector configuration
+extra_vars:
+  ceph_csi_rbd_key: "{{ ceph_csi_rbd_key }}"
+  ceph_csi_cephfs_key: "{{ ceph_csi_cephfs_key }}"
+```
+
+Create a credential of that type with both keys and attach it to the job template. The job stores them as the
+Secrets `csi-rbd-secret` (namespace `ceph-csi-rbd`) and `csi-cephfs-secret` (`ceph-csi-cephfs`).
+
+### ceph_csi
+
+| Variable | Default | Notes |
+| --- | --- | --- |
+| `ceph_csi_enabled` | `false` | |
+| `ceph_csi_cluster_id` / `ceph_csi_monitors` | **required** | `ceph fsid`; monitor addresses, e.g. `["192.0.2.11:6789", "192.0.2.12:6789", "192.0.2.13:6789"]`. |
+| `ceph_csi_rbd_pool` | `""` | Empty: no RBD driver. |
+| `ceph_csi_rbd_user` / `ceph_csi_rbd_key` | `k8s-rbd` / **secret** | The user without `client.`. |
+| `ceph_csi_rbd_storage_class` / `_default_class` | `ceph-rbd` / `true` | |
+| `ceph_csi_rbd_fstype` / `_image_features` | `ext4` / `layering,exclusive-lock,object-map,fast-diff,deep-flatten` | |
+| `ceph_csi_rbd_mounter` | `rbd-nbd` | `krbd` once the nodes' kernel supports aes256k keys (Linux 7.0+). |
+| `ceph_csi_cephfs_fs_name` | `""` | Empty: no CephFS driver. |
+| `ceph_csi_cephfs_subvolume_group` | `csi` | Must exist. |
+| `ceph_csi_cephfs_user` / `ceph_csi_cephfs_key` | `k8s-cephfs` / **secret** | |
+| `ceph_csi_cephfs_storage_class` | `ceph-cephfs` | |
+| `ceph_csi_cephfs_mounter` | `fuse` | `kernel` once the nodes' kernel supports aes256k keys. |
+| `ceph_csi_rbd_metrics_port` / `_cephfs_metrics_port` | `8080` / `8082` | Host ports of the node plugins' metrics. Not 8081: Canal's flanneld listens there on RKE2. |
+| `ceph_csi_reclaim_policy` | `Delete` | `Retain` keeps a volume's data after its claim is deleted. |
+| `ceph_csi_version` | `3.18.1` | |
+| `ceph_csi_check` | `true` | |
+
+### nfs_csi
+
+| Variable | Default | Notes |
+| --- | --- | --- |
+| `nfs_csi_enabled` | `false` | |
+| `nfs_csi_server` / `nfs_csi_share` | **required** | e.g. `192.0.2.20` / `/volume1/k8s`. |
+| `nfs_csi_storage_class` | `nas-nfs` | |
+| `nfs_csi_sub_dir` | `<namespace>-<claim>-<volume>` | Each volume's folder on the share. |
+| `nfs_csi_on_delete` | `archive` | When a claim is deleted: `archive` renames its folder `archived-…`, `retain` leaves it, `delete` removes it. |
+| `nfs_csi_mount_options` | `[nfsvers=4.1, hard]` | |
+| `nfs_csi_controller_replicas` | `2` | |
+| `nfs_csi_version` | `4.13.5` | |
+| `nfs_csi_check` | `true` | |
+
+A StorageClass's parameters can't be changed once it exists: to change the share or options, delete the
+StorageClass (`kubectl delete storageclass nas-nfs`; existing volumes keep working) and run the job again.
+
 ## Add-ons
 
 The add-ons are installed after the nodes, on one server, each when its variables are set. Each one waits for the
-previous: cloud provider → Traefik's address → cert-manager → Rancher. They're installed through RKE2's Helm
-controller (`HelmChart` objects in `kube-system`), so the execution environment doesn't need `helm` or `kubectl`.
+previous: cloud provider → Traefik's address → Ceph storage → NFS storage → cert-manager → Rancher. They're installed
+through RKE2's Helm controller (`HelmChart` objects in `kube-system`), so the execution environment doesn't need `helm`
+or `kubectl`.
 
 Turning one off later doesn't uninstall it.
 
@@ -214,6 +395,21 @@ For a workstation, copy that file and change its `server:` from `https://127.0.0
   address.
 - **Traefik doesn't get its address**: check `kube_vip_lb_range` is set and the `kube-vip-cloud-provider` pod in
   `kube-system` is running (its log shows the allocation), and `kubectl -n kube-system describe service rke2-traefik`.
+- **The storage check fails** (`couldn't be provisioned and written`): the job prints the claim's and pod's events.
+  - `ceph-rbd` / `ceph-cephfs` claim stays Pending: the provisioner can't reach or authenticate to Ceph. Check
+    `ceph_csi_monitors` (Ceph public network addresses, reachable from the nodes), the key, and the user's
+    capabilities (`ceph auth get client.k8s-rbd`); the provisioner's log:
+    `kubectl -n ceph-csi-rbd logs deploy/ceph-csi-rbd-provisioner -c csi-provisioner`.
+  - CephFS: `subvolume group 'csi' does not exist` → `ceph fs subvolumegroup create cephfs csi`.
+  - The pod can't mount and the node's kernel log (`dmesg`) says `libceph: secret too big 32`: a kernel client
+    (`krbd` / `kernel` mounter) got an aes256k key. Use `rbd-nbd` / `fuse` (the defaults).
+  - `AttachVolume.Attach failed … CSINode … does not contain driver`: the driver's node plugin isn't running on that
+    node (`kubectl -n ceph-csi-cephfs get pods -o wide`); a node plugin stuck Pending with "didn't have free ports"
+    has a metrics port that something else on the node uses.
+  - The pod can't mount (`MountVolume` errors): the node itself can't reach Ceph or the NAS on its storage NIC.
+  - `nas-nfs`: `access denied` → the NFS rule doesn't include the nodes' storage network; `permission denied`
+    writing → Squash isn't **No mapping**; mounting a subfolder fails → tick **Allow users to access mounted
+    subfolders**.
 - **Rancher's certificate isn't Ready**: `kubectl -n cattle-system describe certificate tls-rancher-ingress`, then
   `kubectl get challenges -A` and `kubectl describe challenge <name>`: Cloudflare errors (token permissions, wrong
   zone) show there. While testing, use `rancher_cluster_issuer: letsencrypt-staging`.
