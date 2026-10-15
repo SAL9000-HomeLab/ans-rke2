@@ -64,7 +64,8 @@
         tasks_from: labels.yml
 
 # Cluster add-ons, each switched on by its variables: kube-vip's cloud provider (kube_vip_lb_range), Traefik's
-# LoadBalancer address (rke2_traefik_lb_ip), cert-manager (cert_manager_enabled) and Rancher (rancher_enabled).
+# LoadBalancer address (rke2_traefik_lb_ip), Ceph and NFS storage (ceph_csi_enabled, nfs_csi_enabled), cert-manager
+# (cert_manager_enabled) and Rancher (rancher_enabled).
 - name: Install the cluster add-ons
   hosts: rke2_cluster_init
   become: true
@@ -80,6 +81,16 @@
       ansible.builtin.include_role:
         name: rke2_traefik
       when: rke2_traefik_lb_ip | default('') | length > 0
+
+    - name: Install Ceph storage
+      ansible.builtin.include_role:
+        name: ceph_csi
+      when: ceph_csi_enabled | default(false) | bool
+
+    - name: Install NFS storage
+      ansible.builtin.include_role:
+        name: nfs_csi
+      when: nfs_csi_enabled | default(false) | bool
 
     - name: Install cert-manager
       ansible.builtin.include_role:

@@ -1,0 +1,88 @@
+---
+# roles/storage_check/tasks/main.yml
+# The check creates and deletes objects on every run, but it changes nothing that stays, so it reports no change.
+
+- name: Name the test for {{ storage_check_class }}
+  ansible.builtin.set_fact:
+    storage_check_namespace: storage-check-{{ storage_check_class }}
+
+- name: Create a test claim and pod on {{ storage_check_class }}
+  ansible.builtin.command:
+    argv: [/var/lib/rancher/rke2/bin/kubectl, --kubeconfig, /etc/rancher/rke2/rke2.yaml, apply, -f, "-"]
+    stdin: |
+      apiVersion: v1
+      kind: Namespace
+      metadata:
+        name: {{ storage_check_namespace }}
+      ---
+      apiVersion: v1
+      kind: PersistentVolumeClaim
+      metadata:
+        name: check
+        namespace: {{ storage_check_namespace }}
+      spec:
+        storageClassName: {{ storage_check_class }}
+        accessModes: [{{ storage_check_access_mode }}]
+        resources:
+          requests:
+            storage: 1Gi
+      ---
+      apiVersion: v1
+      kind: Pod
+      metadata:
+        name: check
+        namespace: {{ storage_check_namespace }}
+      spec:
+        restartPolicy: Never
+        containers:
+          - name: check
+            image: {{ storage_check_image }}
+            command: [sh, -c, "echo ok > /data/check && cat /data/check"]
+            volumeMounts:
+              - name: data
+                mountPath: /data
+        volumes:
+          - name: data
+            persistentVolumeClaim:
+              claimName: check
+  become: true
+  changed_when: false
+
+- name: Wait for the test pod to write to the volume
+  ansible.builtin.command:
+    argv: [/var/lib/rancher/rke2/bin/kubectl, --kubeconfig, /etc/rancher/rke2/rke2.yaml,
+           -n, "{{ storage_check_namespace }}", get, pod, check, -o, "jsonpath={.status.phase}"]
+  become: true
+  register: storage_check_phase
+  until: storage_check_phase.stdout in ['Succeeded', 'Failed']
+  retries: "{{ storage_check_retries }}"
+  delay: 10
+  changed_when: false
+  failed_when: false
+
+- name: Read why the check failed
+  ansible.builtin.command:
+    argv: [/var/lib/rancher/rke2/bin/kubectl, --kubeconfig, /etc/rancher/rke2/rke2.yaml,
+           -n, "{{ storage_check_namespace }}", get, events, --sort-by=.lastTimestamp,
+           "-o=custom-columns=OBJECT:.involvedObject.name,REASON:.reason,MESSAGE:.message"]
+  become: true
+  register: storage_check_describe
+  changed_when: false
+  failed_when: false
+  when: storage_check_phase.stdout | default('') != 'Succeeded'
+
+- name: Remove the test namespace
+  ansible.builtin.command:
+    argv: [/var/lib/rancher/rke2/bin/kubectl, --kubeconfig, /etc/rancher/rke2/rke2.yaml, delete, namespace,
+           "{{ storage_check_namespace }}", --wait=true, --timeout=180s]
+  become: true
+  changed_when: false
+  failed_when: false
+
+- name: Report a StorageClass that doesn't work
+  ansible.builtin.fail:
+    msg: >-
+      A test volume on {{ storage_check_class }} couldn't be provisioned and written within
+      {{ storage_check_retries * 10 }} seconds (pod phase '{{ storage_check_phase.stdout | default('') }}'). Events:
+      {{ storage_check_describe.stdout_lines | default([]) | join(' | ') }}
+  when: storage_check_phase.stdout | default('') != 'Succeeded'
