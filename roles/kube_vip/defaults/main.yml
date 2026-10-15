@@ -23,3 +23,14 @@ kube_vip_kubeconfig: /etc/rancher/rke2/rke2.yaml
 kube_vip_lease_duration: 15
 kube_vip_renew_deadline: 10
 kube_vip_retry_period: 2
+
+# LoadBalancer services: an address range for kube-vip's cloud provider to hand out (e.g.
+# "192.0.2.202-192.0.2.220", or a CIDR), on the servers' network and outside any DHCP or NetBox allocation range.
+# kube-vip on the servers then answers ARP for each service's address. Empty leaves LoadBalancer services alone (they
+# stay pending). A service can ask for a fixed address with the annotation kube-vip.io/loadbalancerIPs; that address
+# doesn't have to be in the range.
+kube_vip_lb_range: ""
+kube_vip_services_enabled: "{{ kube_vip_lb_range | length > 0 }}"
+
+# kube-vip cloud provider release (https://github.com/kube-vip/kube-vip-cloud-provider/releases).
+kube_vip_cloud_provider_version: v0.0.13

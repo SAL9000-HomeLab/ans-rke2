@@ -1,0 +1,36 @@
+---
+# roles/rancher/defaults/main.yml
+
+# true installs Rancher (through RKE2's Helm controller) behind Traefik, with a cert-manager certificate. Needs the
+# cert_manager role.
+rancher_enabled: false
+
+# Rancher release (https://github.com/rancher/rancher/releases); its chart lists the Kubernetes versions it supports.
+rancher_version: 2.15.2
+
+# The name Rancher is served on, e.g. rancher.app.example.com. Point its DNS record at Traefik's address
+# (rke2_traefik_lb_ip). Required.
+rancher_hostname: ""
+
+rancher_replicas: 3
+
+# ClusterIssuer for Rancher's certificate (see cert_manager_issuers). letsencrypt-staging while testing.
+rancher_cluster_issuer: letsencrypt-production
+
+# Client addresses allowed to reach Rancher through Traefik (Traefik's ipAllowList; needs
+# rke2_traefik_external_traffic_policy Local to see real client addresses). Empty allows everyone.
+rancher_allowed_source_ranges:
+  - 10.0.0.0/8
+  - 172.16.0.0/12
+  - 192.168.0.0/16
+
+# Password for the first login. Secret. Empty: Rancher generates one (the job prints how to read it). Only used on the
+# first install; Rancher asks for a new password at first login. It's stored in the cluster's HelmChart object.
+rancher_bootstrap_password: ""
+
+# More chart values: see Rancher's Helm chart options
+# (ranchermanager.docs.rancher.com, installation references).
+rancher_values: {}
+
+# How long to wait for the certificate and for Rancher to start (retries x 10 seconds).
+rancher_wait_retries: 90

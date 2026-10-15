@@ -1,0 +1,119 @@
+---
+# roles/cert_manager/tasks/main.yml
+# Install cert-manager and Let's Encrypt ClusterIssuers that solve DNS-01 challenges through Cloudflare. Runs on a
+# server.
+
+- name: Check the cert-manager settings
+  ansible.builtin.assert:
+    that:
+      - cert_manager_acme_email is match('^[^@ ]+@[^@ ]+$')
+      - cert_manager_cloudflare_api_token | length > 0
+    fail_msg: >-
+      cert-manager needs cert_manager_acme_email (the Let's Encrypt account email) and cert_manager_cloudflare_api_token
+      (from an AWX credential).
+    quiet: true
+
+- name: Install cert-manager
+  ansible.builtin.include_role:
+    name: kubectl_apply
+  vars:
+    kubectl_apply_name: the cert-manager HelmChart
+    kubectl_apply_manifest: |
+      # Managed by ans-rke2 (cert_manager).
+      apiVersion: helm.cattle.io/v1
+      kind: HelmChart
+      metadata:
+        name: cert-manager
+        namespace: kube-system
+      spec:
+        repo: https://charts.jetstack.io
+        chart: cert-manager
+        version: {{ cert_manager_version }}
+        targetNamespace: cert-manager
+        createNamespace: true
+        valuesContent: |-
+          crds:
+            enabled: true
+          extraArgs:
+            - --dns01-recursive-nameservers-only
+            - --dns01-recursive-nameservers={{ cert_manager_dns01_recursive_nameservers | join(',') }}
+
+# The ClusterIssuers go through cert-manager's webhook, so it has to be running first.
+- name: Wait for cert-manager's webhook
+  ansible.builtin.command:
+    argv:
+      - /var/lib/rancher/rke2/bin/kubectl
+      - --kubeconfig
+      - /etc/rancher/rke2/rke2.yaml
+      - -n
+      - cert-manager
+      - rollout
+      - status
+      - deployment/cert-manager-webhook
+      - --timeout=10s
+  become: true
+  register: cert_manager_webhook
+  until: cert_manager_webhook.rc == 0
+  retries: "{{ cert_manager_wait_retries }}"
+  delay: 10
+  changed_when: false
+
+# data, not stringData: kubectl apply reports a stringData Secret as configured on every run.
+- name: Store the Cloudflare API token
+  ansible.builtin.include_role:
+    name: kubectl_apply
+  vars:
+    kubectl_apply_name: the Cloudflare API token Secret
+    kubectl_apply_no_log: true
+    kubectl_apply_manifest: |
+      apiVersion: v1
+      kind: Secret
+      metadata:
+        name: cloudflare-api-token
+        namespace: cert-manager
+      type: Opaque
+      data:
+        api-token: {{ cert_manager_cloudflare_api_token | b64encode }}
+
+- name: Create the Let's Encrypt issuers
+  ansible.builtin.include_role:
+    name: kubectl_apply
+  when: cert_manager_issuers | length > 0
+  vars:
+    kubectl_apply_name: the Let's Encrypt ClusterIssuers
+    kubectl_apply_manifest: |
+      # Managed by ans-rke2 (cert_manager).
+      {% for name, server in cert_manager_issuers.items() %}
+      ---
+      apiVersion: cert-manager.io/v1
+      kind: ClusterIssuer
+      metadata:
+        name: {{ name }}
+      spec:
+        acme:
+          email: {{ cert_manager_acme_email | to_json }}
+          server: {{ server }}
+          privateKeySecretRef:
+            name: {{ name }}-account
+          solvers:
+            - dns01:
+                cloudflare:
+                  apiTokenSecretRef:
+                    name: cloudflare-api-token
+                    key: api-token
+      {% endfor %}
+
+# Ready = the ACME account is registered with Let's Encrypt (the Cloudflare token is only used per certificate).
+- name: Wait for the issuers to be ready
+  ansible.builtin.command:
+    argv:
+      - /var/lib/rancher/rke2/bin/kubectl
+      - --kubeconfig
+      - /etc/rancher/rke2/rke2.yaml
+      - wait
+      - --for=condition=Ready
+      - --timeout=300s
+      - "{{ 'clusterissuer/' ~ item }}"
+  become: true
+  loop: "{{ cert_manager_issuers.keys() | list }}"
+  changed_when: false

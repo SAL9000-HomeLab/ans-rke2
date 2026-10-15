@@ -1,0 +1,17 @@
+---
+galaxy_info:
+  author: Roland Serman
+  description: Installs cert-manager on RKE2 with Let's Encrypt ClusterIssuers using Cloudflare DNS-01
+  license: MIT
+  min_ansible_version: "2.16"
+  platforms:
+    - name: EL
+      versions:
+        - "9"
+        - "10"
+  galaxy_tags:
+    - kubernetes
+    - rke2
+    - certmanager
+
+dependencies: []

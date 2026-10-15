@@ -1,0 +1,60 @@
+---
+# roles/rke2_traefik/tasks/main.yml
+# Give RKE2's Traefik a fixed LoadBalancer address. Runs on a server.
+
+- name: Build the Traefik chart values
+  vars:
+    rke2_traefik_base_values:
+      service:
+        annotations:
+          kube-vip.io/loadbalancerIPs: "{{ rke2_traefik_lb_ip }}"
+        spec:
+          type: LoadBalancer
+          externalTrafficPolicy: "{{ rke2_traefik_external_traffic_policy }}"
+  ansible.builtin.set_fact:
+    rke2_traefik_chart_values: "{{ rke2_traefik_base_values | combine(rke2_traefik_values, recursive=true) }}"
+
+- name: Configure RKE2's Traefik chart
+  ansible.builtin.include_role:
+    name: kubectl_apply
+  vars:
+    kubectl_apply_name: the Traefik HelmChartConfig
+    kubectl_apply_manifest: |
+      # Managed by ans-rke2 (rke2_traefik).
+      apiVersion: helm.cattle.io/v1
+      kind: HelmChartConfig
+      metadata:
+        name: rke2-traefik
+        namespace: kube-system
+      spec:
+        valuesContent: |-
+          {{ rke2_traefik_chart_values | to_nice_yaml(indent=2) | indent(4) }}
+
+- name: Wait for Traefik's LoadBalancer address
+  ansible.builtin.command:
+    argv:
+      - /var/lib/rancher/rke2/bin/kubectl
+      - --kubeconfig
+      - /etc/rancher/rke2/rke2.yaml
+      - -n
+      - kube-system
+      - get
+      - service
+      - rke2-traefik
+      - -o
+      - jsonpath={.status.loadBalancer.ingress[*].ip}
+  become: true
+  register: rke2_traefik_service
+  until: rke2_traefik_lb_ip in rke2_traefik_service.stdout.split()
+  retries: "{{ rke2_traefik_wait_retries }}"
+  delay: 10
+  changed_when: false
+  failed_when: false
+
+- name: Report Traefik without its address
+  ansible.builtin.fail:
+    msg: >-
+      Traefik's service has '{{ rke2_traefik_service.stdout | default('') }}' instead of {{ rke2_traefik_lb_ip }}
+      after {{ rke2_traefik_wait_retries * 10 }} seconds. Check kube_vip_lb_range is set (the cloud provider must run),
+      `kubectl -n kube-system describe service rke2-traefik` and the kube-vip-cloud-provider pod's log.
+  when: rke2_traefik_lb_ip not in rke2_traefik_service.stdout | default('') | split

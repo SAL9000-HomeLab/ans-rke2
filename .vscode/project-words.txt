@@ -1,3 +1,5 @@
+certmanager
+clusterissuer
 CNI
 controlplane
 crictl
@@ -9,14 +11,20 @@ journalctl
 kubeconfig
 kubectl
 kubelet
+kubernetescrd
 kubevip
 leaderelection
 leaseduration
 leasename
+letsencrypt
 nodename
 plndr
+ranchermanager
 renewdeadline
 retryperiod
 rke
+svcs
 taints
+tolerations
 VXLAN
+websecure

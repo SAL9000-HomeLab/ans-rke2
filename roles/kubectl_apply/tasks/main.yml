@@ -1,0 +1,19 @@
+---
+# roles/kubectl_apply/tasks/main.yml
+# kubectl apply prints one line per object: "<kind>/<name> created|configured|unchanged". Anything but "unchanged"
+# is a change.
+
+- name: Apply {{ kubectl_apply_name }}
+  ansible.builtin.command:
+    argv:
+      - "{{ kubectl_apply_kubectl }}"
+      - --kubeconfig
+      - "{{ kubectl_apply_kubeconfig }}"
+      - apply
+      - -f
+      - "-"
+    stdin: "{{ kubectl_apply_manifest }}"
+  become: true
+  register: kubectl_apply_result
+  changed_when: kubectl_apply_result.stdout_lines | reject('search', ' unchanged$') | list | length > 0
+  no_log: "{{ kubectl_apply_no_log | bool }}"
