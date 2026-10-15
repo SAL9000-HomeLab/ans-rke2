@@ -1,0 +1,115 @@
+---
+# roles/rke2_cluster/tasks/discover.yml
+# Check the inventory, then look at every server (also those outside a --limit) to find out whether the cluster
+# already exists and which server it started on. Results go on localhost so later plays can read them:
+#   rke2_cluster_bootstrap     true when no server has cluster data yet
+#   rke2_cluster_init_server   the server that starts the cluster; once it exists, a reachable server with cluster
+#                              data (preferably the one it started on), used for kubectl and the token
+#   rke2_cluster_origin_servers  servers with cluster data and no server: line (the one the cluster started on)
+#   rke2_cluster_token_resolved  the join token (once the cluster exists)
+# The init server is also added to the in-memory group rke2_cluster_init. Run once per play.
+
+- name: Check the inventory groups
+  ansible.builtin.assert:
+    that:
+      - groups[rke2_cluster_server_group] | default([]) | length > 0
+      - groups[rke2_cluster_server_group] | default([]) | intersect(groups[rke2_cluster_agent_group] | default([]))
+        | length == 0
+      - rke2_cluster_api_address | length > 0
+    fail_msg: >-
+      Put at least one host in {{ rke2_cluster_server_group }}, no host in both {{ rke2_cluster_server_group }} and
+      {{ rke2_cluster_agent_group }}, and set rke2_cluster_api_address (the cluster's API address, held by kube-vip).
+    quiet: true
+  run_once: true
+
+- name: Warn about an even number of servers
+  ansible.builtin.debug:
+    msg: >-
+      {{ groups[rke2_cluster_server_group] | length }} servers: etcd needs a majority of them up, so an even number
+      tolerates no more failures than one fewer server. Use 3 (or 5).
+  when: groups[rke2_cluster_server_group] | length is even
+  run_once: true
+
+# "init" when the server has etcd data, "joined" when its config.yaml points at another server. The server the
+# cluster started on has data and no server: line.
+- name: Look for cluster data on each server
+  ansible.builtin.shell:
+    cmd: |
+      set -u
+      if [ -d {{ rke2_cluster_etcd_dir }}/member ]; then echo init; fi
+      if grep -qs '^server:' {{ rke2_cluster_config_file }}; then echo joined; fi
+      true
+  delegate_to: "{{ item }}"
+  become: true
+  loop: "{{ groups[rke2_cluster_server_group] }}"
+  register: rke2_cluster_server_state
+  changed_when: false
+  failed_when: false
+  ignore_unreachable: true
+  # Not run_once: a run_once task's result counts for every host, so one unreachable server would end the play
+  # for all of them, ignore_unreachable or not.
+  when: inventory_hostname == ansible_play_hosts[0]
+
+- name: Work out the cluster's state
+  vars:
+    rke2_cluster_server_results: "{{ hostvars[ansible_play_hosts[0]].rke2_cluster_server_state.results }}"
+  ansible.builtin.set_fact:
+    # Checked = the shell ran (rc 0); anything else was unreachable or failed (e.g. sudo).
+    rke2_cluster_unreachable_servers: >-
+      {{ groups[rke2_cluster_server_group] | difference(rke2_cluster_server_results | selectattr('rc', 'defined')
+         | selectattr('rc', 'equalto', 0) | map(attribute='item') | list) }}
+    rke2_cluster_initialized_servers: >-
+      {{ rke2_cluster_server_results | selectattr('stdout_lines', 'defined')
+         | selectattr('stdout_lines', 'contains', 'init') | map(attribute='item') | list }}
+    rke2_cluster_origin_servers: >-
+      {{ rke2_cluster_server_results | selectattr('stdout_lines', 'defined')
+         | selectattr('stdout_lines', 'contains', 'init') | rejectattr('stdout_lines', 'contains', 'joined')
+         | map(attribute='item') | list }}
+  run_once: true
+
+# Without seeing every server, a missing cluster might only be one we can't reach; starting a second one would split
+# the cluster.
+- name: Refuse to start a cluster while servers are unreachable
+  ansible.builtin.assert:
+    that:
+      - rke2_cluster_initialized_servers | length > 0 or rke2_cluster_unreachable_servers | length == 0
+    fail_msg: >-
+      No reachable server has cluster data, and {{ rke2_cluster_unreachable_servers | join(', ') }} couldn't be
+      checked. Fix the connection (or remove the host from {{ rke2_cluster_server_group }}) before the play starts a
+      new cluster.
+    quiet: true
+  run_once: true
+
+- name: Record the cluster's state
+  ansible.builtin.set_fact:
+    rke2_cluster_bootstrap: "{{ rke2_cluster_initialized_servers | length == 0 }}"
+    rke2_cluster_origin_servers: "{{ rke2_cluster_origin_servers }}"
+    rke2_cluster_init_server: >-
+      {{ (rke2_cluster_origin_servers + rke2_cluster_initialized_servers + groups[rke2_cluster_server_group])
+         | first }}
+  delegate_to: localhost
+  delegate_facts: true
+  run_once: true
+
+- name: Remember which server the cluster starts on
+  ansible.builtin.add_host:
+    name: "{{ hostvars['localhost'].rke2_cluster_init_server }}"
+    groups: rke2_cluster_init
+  changed_when: false
+  run_once: true
+
+- name: Report the cluster's state
+  ansible.builtin.debug:
+    msg: >-
+      {{ 'No cluster yet: ' ~ hostvars['localhost'].rke2_cluster_init_server ~ ' starts it.'
+         if hostvars['localhost'].rke2_cluster_bootstrap | bool
+         else 'Cluster found on ' ~ (rke2_cluster_initialized_servers | join(', ')) ~ '; '
+              ~ 'the play runs kubectl and reads the join token on ' ~ hostvars['localhost'].rke2_cluster_init_server
+              ~ '; nodes join through ' ~ rke2_cluster_api_address ~ '.' }}
+  run_once: true
+
+# A chosen token is known now; a generated one only once the cluster exists (node.yml reads it after the first
+# server starts).
+- name: Resolve the join token
+  ansible.builtin.include_tasks: token.yml
+  when: not (hostvars['localhost'].rke2_cluster_bootstrap | bool) or rke2_cluster_token | length > 0

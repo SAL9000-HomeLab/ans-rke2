@@ -1,0 +1,54 @@
+---
+# roles/rke2_cluster/tasks/labels.yml
+# Keep the node's zone and rke2_cluster_node_labels set (through kubectl on the init server). Labels the play
+# doesn't manage are left alone.
+
+- name: Build the node's labels
+  ansible.builtin.set_fact:
+    rke2_cluster_labels_wanted: >-
+      {{ rke2_cluster_node_labels
+         | combine({'topology.kubernetes.io/zone': rke2_cluster_node_zone} if rke2_cluster_node_zone | length > 0
+                   else {}) }}
+
+- name: Read the node's labels
+  ansible.builtin.command:
+    argv:
+      - "{{ rke2_cluster_kubectl }}"
+      - --kubeconfig
+      - "{{ rke2_cluster_kubeconfig }}"
+      - get
+      - node
+      - "{{ rke2_cluster_node_name }}"
+      - -o
+      - jsonpath={.metadata.labels}
+  delegate_to: "{{ hostvars['localhost'].rke2_cluster_init_server }}"
+  become: true
+  register: rke2_cluster_labels_current
+  changed_when: false
+  when: rke2_cluster_labels_wanted | length > 0
+
+# As key=value strings: the wanted labels that the node doesn't have with that value.
+- name: Work out which labels need setting
+  vars:
+    rke2_cluster_labels_have: "{{ rke2_cluster_labels_current.stdout | default('{}', true) | from_json }}"
+  ansible.builtin.set_fact:
+    rke2_cluster_labels_changes: >-
+      {{ rke2_cluster_labels_wanted | dict2items | map(attribute='key')
+         | zip(rke2_cluster_labels_wanted | dict2items | map(attribute='value') | map('string'))
+         | map('join', '=') | list
+         | difference(rke2_cluster_labels_have | dict2items | map(attribute='key')
+                      | zip(rke2_cluster_labels_have | dict2items | map(attribute='value') | map('string'))
+                      | map('join', '=') | list) }}
+  when: rke2_cluster_labels_wanted | length > 0
+
+- name: Set the node's labels
+  ansible.builtin.command:
+    argv: >-
+      {{ [rke2_cluster_kubectl, '--kubeconfig', rke2_cluster_kubeconfig, 'label', 'node', rke2_cluster_node_name,
+          '--overwrite'] + rke2_cluster_labels_changes }}
+  delegate_to: "{{ hostvars['localhost'].rke2_cluster_init_server }}"
+  become: true
+  changed_when: true
+  when:
+    - rke2_cluster_labels_wanted | length > 0
+    - rke2_cluster_labels_changes | length > 0

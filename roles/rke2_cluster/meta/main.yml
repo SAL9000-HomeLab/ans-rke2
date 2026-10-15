@@ -1,0 +1,16 @@
+---
+galaxy_info:
+  author: Roland Serman
+  description: Builds an RKE2 cluster from servers and agents and keeps each node's configuration and labels
+  license: MIT
+  min_ansible_version: "2.16"
+  platforms:
+    - name: EL
+      versions:
+        - "9"
+        - "10"
+  galaxy_tags:
+    - kubernetes
+    - rke2
+
+dependencies: []

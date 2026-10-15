@@ -1,0 +1,25 @@
+---
+# roles/kube_vip/defaults/main.yml
+
+# The floating IP for the Kubernetes API (6443) and RKE2's join port (9345), held by one server at a time and
+# moved by ARP when that server goes down. Must be free on the servers' network and outside any DHCP or NetBox
+# allocation range. Empty removes kube-vip.
+kube_vip_address: "{{ rke2_cluster_api_address | default('') }}"
+
+# Interface the address is announced on: the servers' main interface (the one with the default route).
+kube_vip_interface: "{{ ansible_facts.default_ipv4.interface | default('') }}"
+
+# kube-vip release (https://github.com/kube-vip/kube-vip/releases).
+kube_vip_version: v1.2.4
+kube_vip_image: ghcr.io/kube-vip/kube-vip
+
+# RKE2's kubelet runs every manifest in this directory as a static pod.
+kube_vip_manifest_dir: /var/lib/rancher/rke2/agent/pod-manifests
+
+# Kubeconfig kube-vip uses for leader election. RKE2 writes it on every server; it points at the local API.
+kube_vip_kubeconfig: /etc/rancher/rke2/rke2.yaml
+
+# Leader election timing in seconds (kube-vip's defaults): failover takes about the lease duration.
+kube_vip_lease_duration: 15
+kube_vip_renew_deadline: 10
+kube_vip_retry_period: 2

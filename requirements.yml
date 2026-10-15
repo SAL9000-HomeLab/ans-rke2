@@ -1,0 +1,5 @@
+---
+# Collections (and roles) the playbooks need. CI, ansible-lint and AWX project syncs all install from this file,
+# so keep every dependency here rather than in collections/requirements.yml or roles/requirements.yml.
+# The playbooks only use ansible.builtin today.
+collections: []

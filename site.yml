@@ -1,0 +1,62 @@
+---
+# Builds the RKE2 cluster described by the inventory groups rke2_servers and rke2_agents, with kube-vip holding the
+# API address on the servers. Safe to re-run: each node's configuration and labels converge to the inventory, and a
+# changed configuration restarts one node at a time.
+
+- name: Find the cluster
+  hosts: rke2_servers:rke2_agents
+  become: true
+  tasks:
+    - name: Check the inventory and look for an existing cluster
+      ansible.builtin.include_role:
+        name: rke2_cluster
+        tasks_from: discover.yml
+
+- name: Run kube-vip on the servers
+  hosts: rke2_servers
+  become: true
+  gather_facts: false
+  roles:
+    - role: kube_vip
+
+- name: Start the server the cluster starts on
+  hosts: rke2_cluster_init
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Configure and start RKE2
+      ansible.builtin.include_role:
+        name: rke2_cluster
+        tasks_from: node.yml
+
+- name: Join the other servers one at a time
+  hosts: rke2_servers:!rke2_cluster_init
+  become: true
+  gather_facts: false
+  serial: 1
+  tasks:
+    - name: Configure and start RKE2
+      ansible.builtin.include_role:
+        name: rke2_cluster
+        tasks_from: node.yml
+
+- name: Join the agents one at a time
+  hosts: rke2_agents
+  become: true
+  gather_facts: false
+  serial: 1
+  tasks:
+    - name: Configure and start RKE2
+      ansible.builtin.include_role:
+        name: rke2_cluster
+        tasks_from: node.yml
+
+- name: Label the nodes
+  hosts: rke2_servers:rke2_agents
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Set the zone and node labels
+      ansible.builtin.include_role:
+        name: rke2_cluster
+        tasks_from: labels.yml
