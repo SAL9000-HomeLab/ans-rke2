@@ -1,0 +1,24 @@
+---
+# roles/fleet_bootstrap/defaults/main.yml
+# Points Rancher's Fleet (GitOps) at one Git repository, the platform repository that lists everything else. Fleet
+# comes with Rancher, so this needs the rancher role.
+
+# true creates the Git credential and the GitRepo below.
+fleet_bootstrap_enabled: false
+
+# The repository (HTTPS URL), its branch, and the GitRepo's name (it prefixes the bundle names, e.g.
+# <name>-sealed-secrets). Required: fleet_bootstrap_repo.
+fleet_bootstrap_repo: ""
+fleet_bootstrap_branch: main
+fleet_bootstrap_name: k8s-platform
+
+# Read-only GitHub token for private repositories. Secret (an AWX credential): a fine-grained personal access token
+# with Contents: Read-only on the repositories Fleet reads. Empty: the repository is public.
+fleet_bootstrap_github_token: ""
+
+# Name of the Secret (in fleet-local) holding the token. The platform repository's GitRepos refer to it by this name
+# (clientSecretName), so the app repositories use the same credential.
+fleet_bootstrap_secret_name: fleet-github
+
+# How long to wait for Fleet to be installed and to clone the repository (retries x 10 seconds).
+fleet_bootstrap_wait_retries: 60

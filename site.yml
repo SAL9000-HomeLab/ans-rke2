@@ -65,7 +65,7 @@
 
 # Cluster add-ons, each switched on by its variables: kube-vip's cloud provider (kube_vip_lb_range), Traefik's
 # LoadBalancer address (rke2_traefik_lb_ip), Ceph and NFS storage (ceph_csi_enabled, nfs_csi_enabled), cert-manager
-# (cert_manager_enabled) and Rancher (rancher_enabled).
+# (cert_manager_enabled), Rancher (rancher_enabled) and Fleet's platform repository (fleet_bootstrap_enabled).
 - name: Install the cluster add-ons
   hosts: rke2_cluster_init
   become: true
@@ -101,3 +101,8 @@
       ansible.builtin.include_role:
         name: rancher
       when: rancher_enabled | default(false) | bool
+
+    - name: Point Fleet at the platform repository
+      ansible.builtin.include_role:
+        name: fleet_bootstrap
+      when: fleet_bootstrap_enabled | default(false) | bool
