@@ -11,8 +11,18 @@
         spec:
           type: LoadBalancer
           externalTrafficPolicy: "{{ rke2_traefik_external_traffic_policy }}"
+    rke2_traefik_forwarded_headers:
+      forwardedHeaders:
+        trustedIPs: "{{ rke2_traefik_trusted_ips }}"
+    rke2_traefik_trusted_values:
+      ports:
+        web: "{{ rke2_traefik_forwarded_headers }}"
+        websecure: "{{ rke2_traefik_forwarded_headers }}"
   ansible.builtin.set_fact:
-    rke2_traefik_chart_values: "{{ rke2_traefik_base_values | combine(rke2_traefik_values, recursive=true) }}"
+    rke2_traefik_chart_values: >-
+      {{ rke2_traefik_base_values
+         | combine(rke2_traefik_trusted_values if rke2_traefik_trusted_ips | length > 0 else {})
+         | combine(rke2_traefik_values, recursive=true) }}
 
 - name: Configure RKE2's Traefik chart
   ansible.builtin.include_role:

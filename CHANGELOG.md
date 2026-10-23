@@ -5,6 +5,8 @@ pushing a `vX.Y.Z` tag; the release workflow publishes the matching section.
 
 ## [Unreleased]
 
+- Added: `rke2_traefik_trusted_ips`: Traefik keeps the `X-Forwarded-*` headers from these sources (`web` and
+  `websecure` entrypoints), so apps behind an in-cluster proxy such as cloudflared see the real client address.
 - Added: `fleet_bootstrap` role: points Rancher's Fleet at the platform GitOps repository (`fleet_bootstrap_repo`)
   with a read-only GitHub token stored as the Secret `fleet-github`, and checks that Fleet cloned it.
 - Added: storage add-ons. `ceph_csi` installs ceph-csi 3.18 against an existing Ceph cluster: RBD (`ceph-rbd`, the
