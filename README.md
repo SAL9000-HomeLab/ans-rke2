@@ -313,6 +313,7 @@ Turning one off later doesn't uninstall it.
 | --- | --- | --- |
 | `rke2_traefik_lb_ip` | `""` | Traefik's fixed address (ports 80/443). Needs `kube_vip_lb_range`. Point the DNS names of the apps it serves here. |
 | `rke2_traefik_external_traffic_policy` | `Local` | Keeps client addresses (needed for IP allowlists). |
+| `rke2_traefik_trusted_ips` | `[]` | Sources whose `X-Forwarded-*` headers Traefik keeps (`web` and `websecure`), so apps see the real client address behind an in-cluster proxy such as cloudflared: the pod network, `["10.42.0.0/16"]`. Any pod can then set the address apps see; IP allowlists check the connection's source and aren't affected. |
 | `rke2_traefik_values` | `{}` | More values for RKE2's `rke2-traefik` chart. |
 
 RKE2's Traefik is a DaemonSet that also listens on ports 80/443 of every node; that stays as it is.

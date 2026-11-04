@@ -11,6 +11,13 @@ rke2_traefik_lb_ip: ""
 # node running Traefik, which is every node (Traefik is a DaemonSet).
 rke2_traefik_external_traffic_policy: Local
 
+# Sources whose X-Forwarded-* headers Traefik keeps (on the web and websecure entrypoints) instead of replacing them
+# with its own, so the apps see the real client address. For a proxy inside the cluster, such as cloudflared (a
+# Cloudflare Tunnel), that's the pod network (RKE2's default cluster-cidr 10.42.0.0/16). Every pod in that range can
+# then set the client address the apps see; IP allowlists aren't affected (they check the connection's own source).
+# Empty: Traefik trusts no one's headers.
+rke2_traefik_trusted_ips: []
+
 # More chart values merged into the HelmChartConfig (https://github.com/traefik/traefik-helm-chart).
 rke2_traefik_values: {}
 
